@@ -1,0 +1,71 @@
+# --------------------------------------------------------------------------
+# Pipeline artifacts (per-run output; not source)
+# --------------------------------------------------------------------------
+# Raw downloads from USAspending / IRS / SAM. Multi-GB; reproducible from
+# the manifest. Operator-supplied EIN lists under raw/reference/ are tracked
+# explicitly via .gitkeep / individual exceptions if desired.
+raw/
+!raw/reference/.gitkeep
+
+# Parsed parquet files (regenerated from raw/ + reference_lists/).
+interim/
+processed/
+
+# Final exhibits and QA tables (regenerated each run).
+exhibits/
+
+# Per-run manifests (one JSON per `python3 pipeline.py` invocation).
+manifests/run-*.json
+
+# --------------------------------------------------------------------------
+# Python
+# --------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# --------------------------------------------------------------------------
+# Editors / OS noise
+# --------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --------------------------------------------------------------------------
+# Local Claude Code state (per-developer, not shared config)
+# --------------------------------------------------------------------------
+.claude/settings.local.json
+
+# --------------------------------------------------------------------------
+# Methodology working files
+# --------------------------------------------------------------------------
+# Temporary unpack of the methodology .docx during exploration.
+_unpacked/
+methodology.txt
