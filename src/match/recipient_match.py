@@ -185,9 +185,11 @@ def build_recipient_match(transactions: pd.DataFrame,
         tier2_idx = hit_mask.index[hit_mask.values]
         if len(tier2_idx):
             sub = out.loc[tier2_idx, ["recipient_name_norm", "recipient_state_norm"]]
+            # reset_index() (no drop) preserves NAME_norm and STATE_norm as
+            # regular columns - we need STATE_norm two lines down.
             joined = bmf_by_name_state.loc[
                 list(zip(sub["recipient_name_norm"], sub["recipient_state_norm"]))
-            ].reset_index(drop=True)
+            ].reset_index()
             out.loc[tier2_idx, "irs_ein"] = joined["EIN_norm"].values
             out.loc[tier2_idx, "bmf_name"] = joined.get("NAME", pd.Series([""] * len(joined))).values
             out.loc[tier2_idx, "bmf_state"] = joined["STATE_norm"].values
