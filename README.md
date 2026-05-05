@@ -82,6 +82,47 @@ Switch deflator:
 python pipeline.py --tables --deflator GDP
 ```
 
+## Acquisition sources
+
+The pipeline can pull USASpending data three ways. Pick one with `--acquire-source`:
+
+| Source | Speed | Freshness | Network |
+|---|---|---|---|
+| `archive` (default) | ~10 min for FY22-FY25 | ~30-day snapshot lag | Required |
+| `bulk_download` | 30 min - 2 hr per FY | Live | Required |
+| `manual` | as fast as `unzip` | Whatever the local files are | **None** |
+
+### Manual / offline mode
+
+When USAspending's API and S3 endpoints are unreachable (outage, restricted
+network, etc.), download zips by hand from
+[usaspending.gov/download_center](https://www.usaspending.gov/download_center)
+or copy them off another machine, drop them into:
+
+```
+raw/usaspending/manual/
+  fy2022/  one or more zips covering FY22
+  fy2023/  one or more zips covering FY23
+  fy2024/  ...
+  fy2025/  ...
+```
+
+Then run:
+
+```
+python3 pipeline.py --acquire --acquire-source manual
+```
+
+Both zip schemas are accepted in the same FY directory:
+
+- **Custom Award Downloads** zips (`All_PrimeTransactions_*.zip`) - DAIMS / API column codes.
+- **Award Data Archive** zips (`FY{YYYY}_{agency}_Assistance_Full_*.zip`) - Public-Profile column names; renamed automatically.
+
+Multiple zips per FY are concatenated; sub-award zips are skipped; the
+assistance award_type filter (02-11) is re-applied. Each zip is hashed and
+recorded in `raw/usaspending/manual/manifest.json` and the run manifest, so
+the reproducibility contract from Section 9 still holds.
+
 ## Operator-supplied inputs (optional but recommended)
 
 The methodology references several proprietary or login-gated lists. The
