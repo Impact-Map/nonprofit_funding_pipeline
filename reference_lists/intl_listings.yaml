@@ -1,0 +1,22 @@
+# International Assistance Listings (CFDA) - Section 4.4.
+# Listings beginning 19.* (State), 98.* (USAID), 85.* are wholly-international
+# by construction. Selected HHS/CDC global-health listings are added explicitly.
+version: "2026-05-03.v1"
+prefix_includes:
+  - "19."   # Department of State
+  - "98."   # USAID
+  - "85."   # Inter-American Foundation
+explicit_includes:
+  # HHS / CDC global health (curated, not exhaustive)
+  - "93.067"   # Global AIDS Program
+  - "93.318"   # PEPFAR-related cooperative agreements
+  - "93.808"   # Cooperative Agreements with International Partners
+  - "93.825"   # Strengthening Public Health Capacity in Pakistan
+  - "93.978"   # Preventive Health Services - STD Prevention and Control (intl portion)
+  # Additional global health and humanitarian listings
+  - "93.080"   # Blood Disorder Program (intl research portion)
+  - "94.011"   # Foreign Assistance for Programs Overseas (Peace Corps)
+  - "20.901"   # USTDA
+explicit_excludes:
+  # Listings that share a prefix but are domestic-focused. Edit as discovered.
+  []

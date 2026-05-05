@@ -1,0 +1,28 @@
+# NTEE primary-code rules used by the Educational and Hospital classifiers
+# (methodology 4.2 and 4.3).
+version: "2026-05-03.v1"
+
+educational:
+  # Major group B - Education. Listed as ranges for documentation; rule
+  # implementation matches the leading character + numeric prefix.
+  prefix: "B"
+  ranges:
+    - { start: "B20", end: "B29", subcategory: "k12_other" }      # elementary/secondary
+    - { start: "B30", end: "B39", subcategory: "vocational" }     # vocational/technical
+    - { start: "B40", end: "B49", subcategory: "higher_ed_2yr" }  # 2-year colleges
+    - { start: "B50", end: "B59", subcategory: "higher_ed_4yr" }  # 4-year colleges/univs
+    - { start: "B60", end: "B69", subcategory: "adult_ed" }       # adult/continuing
+    - { start: "B70", end: "B79", subcategory: "other_education" } # libraries
+    - { start: "B80", end: "B89", subcategory: "other_education" } # student services
+    - { start: "B90", end: "B99", subcategory: "other_education" } # education NEC
+
+hospital:
+  ranges:
+    - { start: "E20", end: "E22", subcategory: "general_hospital" }
+    - { start: "E22", end: "E23", subcategory: "specialty_hospital" }   # children's, cancer, etc
+    - { start: "E24", end: "E25", subcategory: "specialty_hospital" }   # specialty/community health systems
+    - { start: "E30", end: "E32", subcategory: "fqhc_clinic" }          # ambulatory, FQHCs
+
+# Q-series flags an org as international-affairs (Section 4.4 final rule).
+international_q_series:
+  prefix: "Q"

@@ -1,0 +1,10 @@
+# Reference totals from USAspending Spending Explorer for the cross-check in
+# Step 8. Operator fills these in from the public dashboards on each run; the
+# QA module reports any per-FY cell that diverges by >2% from the observed
+# transaction-level totals (FY25 is in-flight; expect a wider band).
+version: "2026-05-04.v1"
+totals:
+  # - { fy: 2022, obligations_reference: 0.0 }
+  # - { fy: 2023, obligations_reference: 0.0 }
+  # - { fy: 2024, obligations_reference: 0.0 }
+  # - { fy: 2025, obligations_reference: 0.0 }

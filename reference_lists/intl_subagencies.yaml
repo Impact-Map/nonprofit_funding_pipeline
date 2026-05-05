@@ -1,0 +1,45 @@
+# International sub-agencies (methodology Section 4.4).
+# Match against awarding_sub_agency_name on the transaction. Names are matched
+# case-insensitively after whitespace collapse; aliases capture historical
+# renames and abbreviations the API has used.
+version: "2026-05-03.v1"
+sources:
+  - "USASpending awarding_sub_agency_name distinct values, FY22-FY25"
+  - "agency.gov listings"
+subagencies:
+  - canonical: "United States Agency for International Development"
+    aliases: ["USAID", "Agency for International Development"]
+    bureaus_all: true
+  - canonical: "Department of State"
+    aliases: ["U.S. Department of State", "State"]
+    bureaus:
+      - "Bureau of Population, Refugees, and Migration"   # PRM
+      - "Bureau of International Narcotics and Law Enforcement Affairs"  # INL
+      - "Bureau of Democracy, Human Rights, and Labor"    # DRL
+      - "Bureau of European and Eurasian Affairs"         # EUR
+      - "Bureau of African Affairs"                       # AF
+      - "Bureau of Near Eastern Affairs"                  # NEA
+      - "Bureau of East Asian and Pacific Affairs"        # EAP
+      - "Bureau of Western Hemisphere Affairs"            # WHA
+      - "Bureau of South and Central Asian Affairs"       # SCA
+      - "Bureau of International Security and Nonproliferation"  # ISN
+      - "Bureau of Oceans and International Environmental and Scientific Affairs"  # OES
+      - "Office to Monitor and Combat Trafficking in Persons"     # J/TIP
+      - "Bureau of Counterterrorism"                      # CT
+      - "Global Engagement Center"                        # GEC
+  - canonical: "Millennium Challenge Corporation"
+    aliases: ["MCC"]
+  - canonical: "Inter-American Foundation"
+    aliases: ["IAF"]
+  - canonical: "U.S. African Development Foundation"
+    aliases: ["United States African Development Foundation", "ADF", "USADF"]
+  - canonical: "U.S. Institute of Peace"
+    aliases: ["USIP"]
+  - canonical: "U.S. Agency for Global Media"
+    aliases: ["USAGM", "Broadcasting Board of Governors", "BBG"]
+  - canonical: "Peace Corps"
+    aliases: []
+  - canonical: "U.S. Trade and Development Agency"
+    aliases: ["USTDA"]
+  - canonical: "U.S. International Development Finance Corporation"
+    aliases: ["DFC", "Development Finance Corporation", "OPIC"]

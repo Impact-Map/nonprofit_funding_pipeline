@@ -1,0 +1,24 @@
+# COVID-era programs flagged for the robustness exclusion (methodology 7.2).
+# Hits set covid_flag=True on a transaction.
+version: "2026-05-03.v1"
+listings:
+  - "93.461"   # Provider Relief Fund (HHS)
+  - "21.027"   # Coronavirus State and Local Fiscal Recovery Funds (ARPA SLFRF)
+  - "21.023"   # Emergency Rental Assistance (ERA1/ERA2)
+  - "84.425"   # Education Stabilization Fund (incl. EANS, ESSER)
+  - "84.425V"  # EANS
+  - "59.072"   # Restaurant Revitalization Fund (SBA RRF)
+  - "59.075"   # Shuttered Venue Operators Grants
+  - "21.019"   # Coronavirus Relief Fund (CARES)
+  - "93.498"   # Provider Relief Fund - uninsured
+  - "93.499"   # Provider Relief Fund - additional supplements
+program_name_keywords:
+  - "Provider Relief Fund"
+  - "Coronavirus State and Local Fiscal Recovery"
+  - "Emergency Rental Assistance"
+  - "Restaurant Revitalization"
+  - "Shuttered Venue"
+  - "ESSER"
+  - "EANS"
+  - "Higher Education Emergency Relief"
+  - "HEERF"

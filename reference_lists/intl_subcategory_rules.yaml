@@ -1,0 +1,51 @@
+# International sub-category rules (methodology Section 4.4 sub-cuts).
+# Applied within Panel C only. First match wins.
+version: "2026-05-03.v1"
+
+humanitarian:
+  subagency_keywords:
+    - "Bureau of Population, Refugees, and Migration"
+    - "Bureau for Humanitarian Assistance"   # USAID BHA
+    - "Office of U.S. Foreign Disaster Assistance"  # OFDA-successor
+  listing_prefixes: []
+  listings: []
+
+global_health:
+  subagency_keywords:
+    - "Bureau for Global Health"
+  listings:
+    - "93.067"
+    - "93.318"
+    - "93.808"
+    - "93.825"
+  listing_prefixes: []
+  program_keywords:
+    - "PEPFAR"
+    - "President's Malaria Initiative"
+    - "Global Fund"
+
+governance_economic:
+  subagency_keywords:
+    - "Bureau of Democracy, Human Rights, and Labor"
+    - "Millennium Challenge"
+    - "Inter-American Foundation"
+    - "U.S. African Development Foundation"
+    - "U.S. Trade and Development Agency"
+  listings: []
+  listing_prefixes: []
+
+security:
+  subagency_keywords:
+    - "Bureau of International Narcotics and Law Enforcement"
+    - "Bureau of Counterterrorism"
+    - "Bureau of International Security and Nonproliferation"
+  listings: []
+  listing_prefixes: []
+
+education_research:
+  subagency_keywords:
+    - "Bureau of Educational and Cultural Affairs"
+  listings: []
+  listing_prefixes: []
+
+# Anything matching International with no sub-category rule hit -> "other".

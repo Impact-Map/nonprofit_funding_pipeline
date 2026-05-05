@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 \"/Users/jonathan/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e6eb07ec-86ae-47f9-a969-2fac4a4e1b2d/a2373a48-14c1-4ee3-80cc-c0ced8dd9544/skills/docx/scripts/office/unpack.py\" \"Methodology_FederalAssistance_501c3_FY22-FY25.docx\" \"_unpacked\")",
+      "Bash(unzip -o \"Methodology_FederalAssistance_501c3_FY22-FY25.docx\" -d _unpacked)",
+      "Bash(python3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

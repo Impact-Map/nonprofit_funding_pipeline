@@ -1,0 +1,17 @@
+# USASpending recipient business_types codes used as a fallback signal
+# (methodology 4.2). The integer codes are the legacy SF-424 values exposed in
+# USASpending downloads as comma-separated business_types_description text.
+version: "2026-05-03.v1"
+
+educational_codes:
+  - "06"   # State Controlled Institution of Higher Education
+  - "11"   # Private Institution of Higher Education
+  - "12"   # School Districts
+  - "23"   # Other Educational
+
+# Hospital business_types are inconsistently reported; the methodology notes
+# the AHA list and HRSA UDS as primary signals. We track the codes that
+# sometimes flag hospital status, but treat them as advisory only.
+hospital_codes_advisory:
+  - "21"   # Indian/Native American Tribal Government Hospital (rare)
+  - "26"   # Hospital
