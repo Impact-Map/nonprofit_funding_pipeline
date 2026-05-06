@@ -200,6 +200,34 @@ classification:
 - `reference_lists/spending_explorer_ref.yaml` - reconciliation totals from
   the public USAspending Spending Explorer dashboard
 
+## Geographic fields (mapping support)
+
+Both pipelines' analytic transactions tables carry detailed geographic
+attributes for the recipient and the place of performance, suitable for
+state-level choropleths, county-level analysis (FIPS codes provided for
+clean Census shapefile joins), congressional-district analysis, city /
+ZIP point density, and country-level world maps for the International
+panel.
+
+Recipient geography:
+- `recipient_country` / `recipient_country_name`
+- `recipient_state` / `recipient_state_name`
+- `recipient_county_name` / `recipient_county_fips`
+- `recipient_city` / `recipient_zip`
+- `recipient_cd` (congressional district, current redistricting cycle)
+
+Place-of-performance geography:
+- `place_of_performance_country` / `place_of_performance_country_name`
+- `place_of_performance_state_name` / `place_of_performance_state_fips`
+- `place_of_performance_county_name` / `place_of_performance_county_fips`
+- `place_of_performance_city` / `place_of_performance_zip`
+- `place_of_performance_cd`
+
+The QA workbook's `Headline_Summary.xlsx` includes "By Recipient State",
+"By POP State (domestic)", and "Top 100 Recipient Counties" sheets;
+`Recipient_Lookup.xlsx` includes city, county, ZIP, and congressional
+district per recipient.
+
 ## Reproducibility
 
 Every run writes `manifests/run-<UTC>.json` with the contents enumerated in
