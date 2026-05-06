@@ -186,6 +186,45 @@ def test_classify_educational_charter_school():
     assert stats.rows_educational == 1
 
 
+def test_build_awards_table_filters_to_in_scope():
+    """Regression: build_awards_table must filter to in-scope recipients.
+
+    Originally build_awards_table did NOT filter, producing an awards table
+    that contained the entire FY22-FY25 award population (not just 501(c)(3)
+    recipients) - inflating Exhibit 2 outlay totals by ~40x.
+    """
+    from src.lightweight.tables import build_awards_table
+
+    classified = pd.DataFrame([
+        {"transaction_id": "t1", "award_id_unique": "a1", "action_date": "2024-05-01",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "X", "awarding_sub_agency_name": "Y",
+         "assistance_listing_number": "84.001",
+         "recipient_uei": "U1", "recipient_name": "In-Scope Org",
+         "recipient_state_code": "NY", "recipient_category": "core",
+         "recipient_subcategory": "",
+         "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 100, "total_outlayed_amount_for_overall_award": 80},
+        {"transaction_id": "t2", "award_id_unique": "a2", "action_date": "2024-05-01",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "X", "awarding_sub_agency_name": "Y",
+         "assistance_listing_number": "84.001",
+         "recipient_uei": "U2", "recipient_name": "Out-of-Scope Org",
+         "recipient_state_code": "CA", "recipient_category": "core",
+         "recipient_subcategory": "",
+         "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 999, "total_outlayed_amount_for_overall_award": 999},
+    ])
+    rfilter = pd.DataFrame([
+        {"recipient_uei": "U1", "in_scope": True},
+        {"recipient_uei": "U2", "in_scope": False},
+    ])
+    awards = build_awards_table(classified, recipient_filter=rfilter)
+    assert len(awards) == 1
+    assert awards.iloc[0]["recipient_uei"] == "U1"
+    assert int(awards.iloc[0]["sum_obligation"]) == 100
+
+
 def test_classify_priority_intl_over_hospital():
     """Hospital name with foreign POP -> International wins per priority hierarchy."""
     txn = pd.DataFrame([

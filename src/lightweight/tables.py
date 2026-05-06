@@ -93,9 +93,23 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
     return out
 
 
-def build_awards_table(transactions_classified: pd.DataFrame) -> pd.DataFrame:
-    """Award-level table with first_action_date and cumulative outlay."""
+def build_awards_table(transactions_classified: pd.DataFrame,
+                       recipient_filter: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Award-level table with first_action_date and cumulative outlay.
+
+    Filters to in-scope recipients (M-with-exclusions per the recipient_filter
+    table) before aggregating, mirroring build_transactions_table. Without
+    this filter the awards table reflects the entire FY22-FY25 award
+    population rather than just lightweight-501(c)(3) recipients - producing
+    wildly inflated outlay totals in Exhibit 2.
+    """
     df = transactions_classified.copy()
+    if recipient_filter is not None:
+        rf = recipient_filter[recipient_filter["in_scope"]]
+        in_scope_uei = set(rf["recipient_uei"].map(normalize_uei))
+        df["recipient_uei"] = df["recipient_uei"].map(normalize_uei)
+        df = df[df["recipient_uei"].isin(in_scope_uei)].copy()
+        LOG.info("Awards (lightweight): %d transactions in M-with-exclusions scope", len(df))
     if "award_id_unique" not in df.columns:
         df["award_id_unique"] = df.get("generated_unique_award_id", df.index.astype(str))
 

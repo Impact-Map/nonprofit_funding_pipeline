@@ -150,8 +150,19 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
 
 
 def build_awards_table(transactions_classified: pd.DataFrame) -> pd.DataFrame:
-    """Award-level table: first_action_date and cumulative outlay per Section 6/Step 6."""
+    """Award-level table: first_action_date and cumulative outlay per Section 6/Step 6.
+
+    Filters to in-scope recipients (match_tier 1-4) before aggregating, mirroring
+    build_transactions_table. Without this filter the awards table reflects the
+    entire FY22-FY25 award population (~21M rows, $16T+ in outlays) rather than
+    just 501(c)(3) recipients - producing wildly inflated outlay totals in
+    Exhibit 2 and the QA reports.
+    """
     df = transactions_classified.copy()
+    if "match_tier" in df.columns:
+        in_scope = df["match_tier"].notna() & (df["match_tier"] < 5)
+        LOG.info("Awards: %d / %d transactions in 501(c)(3) scope", int(in_scope.sum()), len(df))
+        df = df.loc[in_scope].copy()
     if "award_id_unique" not in df.columns:
         df["award_id_unique"] = df.get("generated_unique_award_id", df.index.astype(str))
 

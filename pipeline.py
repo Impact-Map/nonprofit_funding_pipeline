@@ -244,7 +244,7 @@ def step_tables_lightweight(run_cfg: config.RunConfig,
         classified, rfilter,
         deflator=run_cfg.deflator, base_fy=run_cfg.deflator_base_fy,
     )
-    awards_table = light_tables.build_awards_table(classified)
+    awards_table = light_tables.build_awards_table(classified, recipient_filter=rfilter)
     paths = light_tables.write_outputs(txn_table, awards_table)
     manifest_mod.add_output(run_manifest, paths.transactions, "assistance_txn_501c3_lightweight")
     manifest_mod.add_output(run_manifest, paths.awards, "assistance_awards_501c3_lightweight")
