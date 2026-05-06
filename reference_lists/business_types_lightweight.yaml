@@ -1,12 +1,20 @@
-# Phase 1 lightweight 501(c)(3) identification rule (methodology Section 3.2).
+# Phase 1 lightweight 501(c)(3) identification rule (methodology Section 3.2 v2).
 #
 # A USASpending recipient is in scope iff:
 #   - business_types_code includes 'M' (Nonprofit with 501C3 IRS Status), AND
-#   - business_types_code does NOT include any code in `excluded_codes`.
+#   - business_types_code does NOT include any code in `excluded_codes`
+#     (hard exclusions). Codes in `soft_codes` are tolerated.
 #
-# Codes E (Regional Organization) and K (Indian/Native American Tribally
-# Designated Organization) are NOT excluded; they may co-occur with M without
-# disqualifying the recipient.
+# Three categories of co-tag below:
+#   - excluded_codes  : hard exclusions; presence disqualifies the recipient.
+#   - soft_codes      : informational tags that may co-occur with M without
+#                       disqualifying (currently just X = "Other"; see v2
+#                       note below for the empirical reasoning).
+#   - permitted_cotags: documentation-only; codes E (Regional Organization)
+#                       and K (Indian/Native American Tribally Designated
+#                       Organization) co-occur freely with M and the rule
+#                       does not reference this list - it is here to make
+#                       the rule's boundaries readable.
 version: "2026-05-06.v2"
 # v2: split exclusion list into hard exclusions (codes that contradict 501(c)(3)
 # status) and soft codes (informational tags that don't contradict M).
