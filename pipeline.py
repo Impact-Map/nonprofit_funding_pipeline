@@ -28,7 +28,7 @@ from typing import Iterable
 import pandas as pd
 
 from src import config, manifest as manifest_mod
-from src.acquire import irs_bmf, sam, usaspending
+from src.acquire import award_archive, irs_bmf, manual as manual_acquire, sam, usaspending
 from src.aggregate import exhibits as exhibits_mod
 from src.analytic import tables as tables_mod
 from src.classify import categorize
@@ -47,11 +47,43 @@ LOG = logging.getLogger("usasp.pipeline")
 # ---------------------------------------------------------------------------
 
 
-def _read_transactions() -> pd.DataFrame:
+# Columns each downstream step actually consumes. Reading only what's needed
+# keeps the four-FY load under ~3 GB instead of ~30 GB (113 cols * dtype=str).
+_MATCH_COLUMNS = (
+    "recipient_uei", "recipient_duns", "recipient_name", "recipient_state_code",
+    "recipient_ein", "federal_action_obligation", "action_date",
+    "awarding_agency_name",  # for the match coverage report
+)
+
+_CLASSIFY_COLUMNS = (
+    "transaction_id", "award_id_unique", "action_date", "award_type_code",
+    "action_type", "awarding_agency_name", "awarding_sub_agency_name",
+    "assistance_listing_number", "assistance_listing_title",
+    "recipient_uei", "recipient_name", "recipient_state_code",
+    "recipient_business_types", "primary_place_of_performance_country_code",
+    "federal_action_obligation",
+    "total_outlayed_amount_for_overall_award",
+    "generated_unique_award_id",
+    "program_activity_name",
+)
+
+
+def _read_transactions(columns: tuple[str, ...] | None = None) -> pd.DataFrame:
     parts = sorted(config.INTERIM.glob("transactions_fy*.parquet"))
     if not parts:
         raise FileNotFoundError("No transactions parquet under /interim. Run --acquire first.")
-    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    if columns is None:
+        return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    # Project columns at read time. Use pyarrow metadata to skip columns that
+    # don't exist in a given parquet (different acquisition sources include
+    # different column subsets).
+    import pyarrow.parquet as pq
+    frames = []
+    for p in parts:
+        schema_cols = set(pq.read_metadata(p).schema.to_arrow_schema().names)
+        wanted = [c for c in columns if c in schema_cols]
+        frames.append(pd.read_parquet(p, columns=wanted))
+    return pd.concat(frames, ignore_index=True)
 
 
 def _read_bmf() -> pd.DataFrame:
@@ -91,9 +123,49 @@ def _read_analytic_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
 # ---------------------------------------------------------------------------
 
 
-def step_acquire(run_cfg: config.RunConfig, run_manifest: manifest_mod.RunManifest) -> None:
-    LOG.info("Step 2: USASpending bulk downloads")
-    records = usaspending.download_all(run_cfg.fiscal_years)
+def step_acquire(run_cfg: config.RunConfig, run_manifest: manifest_mod.RunManifest,
+                 download_workers: int | None = None,
+                 source: str = "bulk_download") -> None:
+    """Step 2: acquire transaction data.
+
+    `source` selects the acquisition path:
+      - "bulk_download": POST to /api/v2/bulk_download/awards/, poll until the
+        job finishes, stream the zip. Freshest data; very slow generation
+        (~30 min - 2 hr per FY) because the file is generated on demand.
+      - "archive": pull pre-generated per-agency zips from
+        files.usaspending.gov/award_data_archive/ in parallel. ~10 min total
+        for FY22-FY25 because the files already exist on S3. Snapshot lags
+        the live data by up to ~30 days; the snapshot date is recorded in
+        the manifest.
+    """
+    if source == "archive":
+        LOG.info("Step 2: Award Data Archive (per-agency zips, workers=%s)", download_workers or 16)
+        paths, records = award_archive.download_all(
+            run_cfg.fiscal_years,
+            max_workers=download_workers or 16,
+        )
+        run_manifest.usaspending_downloads = [asdict(r) for r in records]
+        run_manifest.notes.append(
+            f"Used Award Data Archive snapshot; {len(paths)} per-agency zips downloaded"
+        )
+        LOG.info("Step 2: extracting %d archive zips to parquet", len(paths))
+        award_archive.extract_archives_to_parquet(run_cfg.fiscal_years)
+        return
+
+    if source == "manual":
+        LOG.info("Step 2: manual mode - extracting locally-staged zips")
+        records, extracted = manual_acquire.acquire_from_manual(run_cfg.fiscal_years)
+        run_manifest.usaspending_downloads = [asdict(r) for r in records]
+        total_files = sum(r.files for r in records)
+        total_mb = sum(r.total_bytes for r in records) / 1e6
+        run_manifest.notes.append(
+            f"Manual mode: extracted {total_files} local zip(s), {total_mb:.1f} MB; "
+            "no network calls to USAspending."
+        )
+        return
+
+    LOG.info("Step 2: USASpending bulk downloads (workers=%s)", download_workers)
+    records = usaspending.download_all(run_cfg.fiscal_years, max_workers=download_workers)
     run_manifest.usaspending_downloads = [asdict(r) for r in records]
     LOG.info("Step 2: extracting CSVs to parquet")
     usaspending.extract_all(run_cfg.fiscal_years)
@@ -118,7 +190,7 @@ def step_sam(run_manifest: manifest_mod.RunManifest) -> None:
 
 def step_match(run_manifest: manifest_mod.RunManifest) -> None:
     LOG.info("Step 4: build recipient_match")
-    txn = _read_transactions()
+    txn = _read_transactions(columns=_MATCH_COLUMNS)
     bmf = _read_bmf()
     sam_df = _read_sam()
     match_df, stats, review = recipient_match.build_recipient_match(txn, bmf, sam_df)
@@ -134,7 +206,7 @@ def step_match(run_manifest: manifest_mod.RunManifest) -> None:
 
 def step_classify(run_cfg: config.RunConfig, run_manifest: manifest_mod.RunManifest) -> None:
     LOG.info("Step 5: category classification")
-    txn = _read_transactions()
+    txn = _read_transactions(columns=_CLASSIFY_COLUMNS)
     match_df = _read_match_table()
 
     aha_eins = _load_optional_eins("aha_eins.txt")
@@ -213,6 +285,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--exhibits", action="store_true", help="Step 7: exhibits")
     p.add_argument("--qa", action="store_true", help="Step 8: QA checks")
     p.add_argument("--deflator", default=config.DEFAULT_DEFLATOR, choices=["CPI-U", "GDP"])
+    p.add_argument("--download-workers", type=int, default=None,
+                   help="Parallel download workers. bulk_download default: one per FY (4). archive default: 16.")
+    p.add_argument("--acquire-source", choices=["bulk_download", "archive", "manual"],
+                   default="archive",
+                   help="Where to pull USASpending data from. 'archive' is the pre-generated per-agency zip set "
+                        "(fast, ~30-day snapshot lag). 'bulk_download' is the POST-and-poll API (freshest, slow). "
+                        "'manual' extracts zips that the operator has staged under raw/usaspending/manual/fy{N}/ "
+                        "(no network required - use this when USAspending is down or unreachable).")
     p.add_argument("--priority", nargs=4,
                    default=list(config.RunConfig().classification_priority),
                    metavar=("P1", "P2", "P3", "P4"),
@@ -250,7 +330,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if do_acquire:
-            step_acquire(run_cfg, rm)
+            step_acquire(run_cfg, rm,
+                         download_workers=args.download_workers,
+                         source=args.acquire_source)
         if do_bmf:
             step_bmf(rm)
         if do_sam:

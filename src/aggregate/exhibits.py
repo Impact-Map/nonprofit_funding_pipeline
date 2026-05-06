@@ -99,7 +99,9 @@ def _pivot_share(txn: pd.DataFrame, index: str, columns: str) -> pd.DataFrame:
 # Exhibit 5 / 6: top 25 funding agencies / CFDA programs --------------------
 
 def exhibit_5_top_agencies(txn: pd.DataFrame, top_n: int = 25) -> pd.DataFrame:
-    return _top_n_with_rank(txn, "awarding_agency_name", top_n)
+    # Column name in the analytic table is `awarding_agency` per Section 11
+    # schema (stripped of the `_name` suffix during build_transactions_table).
+    return _top_n_with_rank(txn, "awarding_agency", top_n)
 
 
 def exhibit_6_top_listings(txn: pd.DataFrame, top_n: int = 25) -> pd.DataFrame:
@@ -145,7 +147,7 @@ def exhibit_9_covid_contribution(txn: pd.DataFrame) -> pd.DataFrame:
 # Exhibit 10: shift-share decomposition of FY25 vs FY22 ---------------------
 
 def exhibit_10_shift_share_fy25_vs_fy22(txn: pd.DataFrame,
-                                        dim_a: str = "awarding_agency_name",
+                                        dim_a: str = "awarding_agency",
                                         dim_b: str = "assistance_listing_number") -> pd.DataFrame:
     """Within / between / interaction decomposition by (agency, program).
 

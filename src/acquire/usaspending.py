@@ -131,15 +131,22 @@ def poll_status(file_name_or_status_url: str,
     raise TimeoutError(f"Bulk download did not finish within {timeout_s}s")
 
 
-def stream_download(url: str, dest: Path, session: requests.Session | None = None) -> tuple[Path, dict[str, str]]:
-    """Stream a URL to disk; return (path, response_headers)."""
+def stream_download(url: str, dest: Path,
+                    session: requests.Session | None = None,
+                    progress_position: int | None = None) -> tuple[Path, dict[str, str]]:
+    """Stream a URL to disk; return (path, response_headers).
+
+    `progress_position` lets parallel threads stack their tqdm bars on
+    different terminal rows so they don't overwrite each other.
+    """
     sess = session or requests.Session()
     dest.parent.mkdir(parents=True, exist_ok=True)
     with sess.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
         total = int(r.headers.get("Content-Length", 0))
         with dest.open("wb") as f, tqdm(
-            total=total, unit="B", unit_scale=True, desc=dest.name, leave=False,
+            total=total, unit="B", unit_scale=True, desc=dest.name,
+            leave=False, position=progress_position,
         ) as pbar:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 if chunk:
@@ -150,7 +157,8 @@ def stream_download(url: str, dest: Path, session: requests.Session | None = Non
 
 def download_fy(fy: int,
                 out_dir: Path | None = None,
-                session: requests.Session | None = None) -> DownloadRecord:
+                session: requests.Session | None = None,
+                progress_position: int | None = None) -> DownloadRecord:
     """End-to-end: submit, poll, download zip for one FY."""
     out_dir = out_dir or config.RAW_USASPENDING / f"fy{fy}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +182,9 @@ def download_fy(fy: int,
     zip_dest = out_dir / Path(file_name or download_url.split("/")[-1]).name
     if not zip_dest.suffix:
         zip_dest = zip_dest.with_suffix(".zip")
-    zip_path, headers = stream_download(download_url, zip_dest, sess)
+    zip_path, headers = stream_download(
+        download_url, zip_dest, sess, progress_position=progress_position,
+    )
 
     api_refresh = headers.get("Last-Modified") or final.get("update_date")
     file_count = 0
@@ -195,11 +205,53 @@ def download_fy(fy: int,
     return record
 
 
-def download_all(fiscal_years: tuple[int, ...] = config.FISCAL_YEARS) -> list[DownloadRecord]:
-    sess = requests.Session()
+def download_all(fiscal_years: tuple[int, ...] = config.FISCAL_YEARS,
+                 max_workers: int | None = None) -> list[DownloadRecord]:
+    """Download every FY's bulk export.
+
+    Each FY is independent (separate submit / poll / download cycle), so
+    workers run in parallel threads. The bottleneck is network I/O, not CPU;
+    threads are the right choice. Default workers = number of FYs (typically 4).
+
+    Failures in one FY raise immediately and cancel the rest of the pool.
+    """
+    if max_workers is None:
+        max_workers = max(1, len(fiscal_years))
+
+    if max_workers <= 1 or len(fiscal_years) <= 1:
+        sess = requests.Session()
+        return [download_fy(fy, session=sess) for fy in fiscal_years]
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    LOG.info("Downloading %d fiscal years with %d workers", len(fiscal_years), max_workers)
+
+    fy_to_position = {fy: i for i, fy in enumerate(fiscal_years)}
+
+    def _worker(fy: int) -> DownloadRecord:
+        # One session per thread; requests.Session is documented thread-safe
+        # for the most part, but a per-thread session avoids any contention
+        # on connection-pool internals during long-running streaming reads.
+        return download_fy(
+            fy, session=requests.Session(),
+            progress_position=fy_to_position[fy],
+        )
+
     records: list[DownloadRecord] = []
-    for fy in fiscal_years:
-        records.append(download_fy(fy, session=sess))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="usasp-dl") as pool:
+        futures = {pool.submit(_worker, fy): fy for fy in fiscal_years}
+        for fut in as_completed(futures):
+            fy = futures[fut]
+            try:
+                records.append(fut.result())
+            except Exception:
+                LOG.exception("FY%d download failed; cancelling remaining workers", fy)
+                for other in futures:
+                    if not other.done():
+                        other.cancel()
+                raise
+
+    records.sort(key=lambda r: r.fy)
     return records
 
 
