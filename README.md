@@ -118,6 +118,32 @@ side-by-side.
 
 Lightweight wall time on FY22–FY25: ~15–30 min (no Tier 3 fuzzy match).
 
+### Client QA workbooks
+
+The lightweight pipeline outputs (parquet, JSON manifests, CSV with raw column
+names) are appropriate for code-driven analysis but not for handing to a
+non-technical client for spot-check QA. The
+[`scripts/build_qa_workbooks.py`](scripts/build_qa_workbooks.py) script reads
+the lightweight outputs and produces two formatted Excel workbooks:
+
+```
+python3 scripts/build_qa_workbooks.py
+```
+
+Outputs land under `exhibits/lightweight/qa_for_client/`:
+
+- `Headline_Summary.xlsx` — cover page, per-FY summary, panel × FY grid,
+  top 25 agencies and top 25 CFDA programs per panel, top 50 recipients per
+  panel (the headline QA artifact, with USAspending profile URLs and a
+  Reviewer Notes column), YoY change at the agency level, plain-English
+  caveats, glossary.
+- `Recipient_Lookup.xlsx` — searchable list of all in-scope recipients
+  (FY-by-FY obligations, business types tagged, profile URL), plus the top
+  200 excluded recipients with plain-English exclusion reasons.
+
+Re-run the script after any methodology change; the workbooks regenerate
+from the latest analytic parquet outputs in seconds.
+
 ## Acquisition sources
 
 The pipeline can pull USASpending data three ways. Pick one with `--acquire-source`:
