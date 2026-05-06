@@ -196,24 +196,41 @@ def build_awards_table(transactions_classified: pd.DataFrame) -> pd.DataFrame:
     df["federal_action_obligation"] = pd.to_numeric(
         df.get("federal_action_obligation", 0), errors="coerce"
     ).fillna(0.0)
+    if "period_of_performance_start_date" in df.columns:
+        df["period_of_performance_start_date"] = pd.to_datetime(
+            df["period_of_performance_start_date"], errors="coerce"
+        )
+
+    agg_spec = {
+        "first_action_date": ("action_date", "min"),
+        "last_action_date": ("action_date", "max"),
+        "recipient_uei": ("recipient_uei", "first"),
+        "recipient_name": ("recipient_name", "first"),
+        "awarding_agency_name": ("awarding_agency_name", "first"),
+        "awarding_sub_agency_name": ("awarding_sub_agency_name", "first"),
+        "assistance_listing_number": ("assistance_listing_number", "first"),
+        "award_type_code": ("award_type_code", "first"),
+        "recipient_category": ("recipient_category", "first"),
+        "recipient_subcategory": ("recipient_subcategory", "first"),
+        "match_tier": ("match_tier", "min"),  # best tier on the award
+        "sum_obligation": ("federal_action_obligation", "sum"),
+    }
+    if "period_of_performance_start_date" in df.columns:
+        agg_spec["earliest_pop_start"] = ("period_of_performance_start_date", "min")
 
     grp = df.groupby("award_id_unique", dropna=False)
-    awards = grp.agg(
-        first_action_date=("action_date", "min"),
-        last_action_date=("action_date", "max"),
-        recipient_uei=("recipient_uei", "first"),
-        recipient_name=("recipient_name", "first"),
-        awarding_agency_name=("awarding_agency_name", "first"),
-        awarding_sub_agency_name=("awarding_sub_agency_name", "first"),
-        assistance_listing_number=("assistance_listing_number", "first"),
-        award_type_code=("award_type_code", "first"),
-        recipient_category=("recipient_category", "first"),
-        recipient_subcategory=("recipient_subcategory", "first"),
-        match_tier=("match_tier", "min"),  # best tier on the award
-        sum_obligation=("federal_action_obligation", "sum"),
-    ).reset_index()
-
+    awards = grp.agg(**agg_spec).reset_index()
     awards["vintage_fy"] = _fy_from_action_date(awards["first_action_date"])
+    # Pre-FY22 flag: True when the award's stated period of performance start
+    # is before Oct 1, 2021. Such awards likely have obligation history
+    # outside our FY22-FY25 window, so cumulative_outlay can legitimately
+    # exceed sum_obligation.
+    fy22_start = pd.Timestamp("2021-10-01")
+    if "earliest_pop_start" in awards.columns:
+        awards["pre_fy22_award"] = (awards["earliest_pop_start"].notna()
+                                    & (awards["earliest_pop_start"] < fy22_start))
+    else:
+        awards["pre_fy22_award"] = False
 
     if "total_outlayed_amount_for_overall_award" in df.columns:
         outlay = (

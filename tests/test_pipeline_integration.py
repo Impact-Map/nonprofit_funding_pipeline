@@ -211,6 +211,56 @@ def test_geographic_columns_propagate_to_analytic_table():
     assert u1["place_of_performance_state_name"] == "New York"
 
 
+def test_pre_fy22_award_flag():
+    """build_awards_table sets pre_fy22_award=True iff the award's earliest
+    period_of_performance_start_date predates Oct 1, 2021."""
+    rows = [
+        # Pre-FY22: PoP start is FY18.
+        {"transaction_id": "t1", "award_id_unique": "a1", "action_date": "2024-05-01",
+         "period_of_performance_start_date": "2018-10-01",
+         "award_type_code": "04", "action_type": "B",
+         "awarding_agency_name": "X", "awarding_sub_agency_name": "Y",
+         "assistance_listing_number": "84.001",
+         "recipient_uei": "U1", "recipient_name": "Long-Running Grantee",
+         "recipient_state_code": "NY", "recipient_category": "core",
+         "recipient_subcategory": "",
+         "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 100, "total_outlayed_amount_for_overall_award": 500},
+        # Post-FY22: PoP start is FY24.
+        {"transaction_id": "t2", "award_id_unique": "a2", "action_date": "2024-05-01",
+         "period_of_performance_start_date": "2024-01-15",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "X", "awarding_sub_agency_name": "Y",
+         "assistance_listing_number": "84.001",
+         "recipient_uei": "U2", "recipient_name": "Fresh Grantee",
+         "recipient_state_code": "CA", "recipient_category": "core",
+         "recipient_subcategory": "",
+         "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 200, "total_outlayed_amount_for_overall_award": 50},
+        # Edge case: PoP start exactly Oct 1, 2021 (FY22 day 1) - NOT pre-FY22.
+        {"transaction_id": "t3", "award_id_unique": "a3", "action_date": "2024-05-01",
+         "period_of_performance_start_date": "2021-10-01",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "X", "awarding_sub_agency_name": "Y",
+         "assistance_listing_number": "84.001",
+         "recipient_uei": "U3", "recipient_name": "Day-One Grantee",
+         "recipient_state_code": "TX", "recipient_category": "core",
+         "recipient_subcategory": "",
+         "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 50, "total_outlayed_amount_for_overall_award": 30},
+    ]
+    classified = pd.DataFrame(rows)
+    rfilter = pd.DataFrame([
+        {"recipient_uei": uei, "in_scope": True, "bt_set": "M"}
+        for uei in ("U1", "U2", "U3")
+    ])
+    awards = build_awards_table(classified, recipient_filter=rfilter)
+    by_award = awards.set_index("award_id_unique")["pre_fy22_award"]
+    assert bool(by_award["a1"]) is True, "FY18 PoP start should be flagged pre-FY22"
+    assert bool(by_award["a2"]) is False, "FY24 PoP start should NOT be flagged"
+    assert bool(by_award["a3"]) is False, "Oct 1, 2021 (FY22 day 1) is on-or-after the cutoff"
+
+
 def test_panel_arithmetic_invariant():
     """In any classified frame, sum of obligations across the four panels
     must equal the total. If a transaction landed in two panels (or zero),

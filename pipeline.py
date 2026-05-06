@@ -91,6 +91,8 @@ _CLASSIFY_COLUMNS = (
     # Money
     "federal_action_obligation",
     "total_outlayed_amount_for_overall_award",
+    # Award lifecycle (used to flag awards whose obligation history predates FY22)
+    "period_of_performance_start_date",
 )
 
 

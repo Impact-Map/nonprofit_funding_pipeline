@@ -292,6 +292,7 @@ def sheet_top_listings(txn: pd.DataFrame, panel: str,
 def sheet_top_recipients(txn: pd.DataFrame, panel: str,
                          names_by_uei: pd.Series,
                          outlay_by_uei: pd.Series | None = None,
+                         pre_fy22_by_uei: pd.Series | None = None,
                          top_n: int = 50) -> pd.DataFrame:
     """The lightweight analytic txn table doesn't carry recipient_name; pass
     in a name lookup keyed by UEI so we can resolve."""
@@ -322,6 +323,13 @@ def sheet_top_recipients(txn: pd.DataFrame, panel: str,
         out["Total Cumulative Outlays"] = out["recipient_uei"].map(outlay_by_uei).fillna(0)
     else:
         out["Total Cumulative Outlays"] = 0
+    if pre_fy22_by_uei is not None:
+        out["Has Pre-FY22 Award History"] = (
+            out["recipient_uei"].map(pre_fy22_by_uei).fillna(False)
+            .map({True: "Yes", False: "No"})
+        )
+    else:
+        out["Has Pre-FY22 Award History"] = ""
     out["USAspending Search URL"] = out.apply(
         lambda r: usaspending_search_url(r["Recipient Name"], r["recipient_uei"]),
         axis=1,
@@ -336,6 +344,7 @@ def sheet_top_recipients(txn: pd.DataFrame, panel: str,
         "Total Obligations (FY22-FY25)",
         "FY22", "FY23", "FY24", "FY25",
         "Total Cumulative Outlays",
+        "Has Pre-FY22 Award History",
         "USAspending Search URL", "Reviewer Notes",
     ]]
 
@@ -481,7 +490,7 @@ def sheet_yoy_change(txn: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
     return pivot.sort_values("Change ($)", key=abs, ascending=False).head(top_n).reset_index(drop=True)
 
 
-def sheet_caveats() -> pd.DataFrame:
+def sheet_caveats(extra_rows: list[tuple[str, str]] | None = None) -> pd.DataFrame:
     rows = [
         ("Recipient identification depends on a single tag",
          "501(c)(3) status is identified by USAspending's 'M' business type code, which is "
@@ -515,7 +524,19 @@ def sheet_caveats() -> pd.DataFrame:
         ("Sub-awards are out of scope",
          "Federal funds passed through a state government to a 501(c)(3) sub-recipient appear "
          "under the state, not the 501(c)(3). Sub-award (FFATA) data is not analyzed."),
+        ("Outlays may exceed obligations on individual recipients",
+         "About 31% of awards in this analysis show cumulative outlays larger than the obligation "
+         "totals shown here. This is usually NOT a data error - it happens because the obligation "
+         "totals are summed only across FY22-FY25 transactions, while the cumulative outlay reflects "
+         "the entire life of the award. An award started in FY18 with $100M obligated then, with "
+         "outlays continuing into FY24, would show $0 obligated in our window but tens of millions "
+         "in outlay against the older obligation. The 'Has Pre-FY22 Award History' column on the "
+         "Top 50 Recipients sheets and the In-Scope Recipients sheet flags recipients with at least "
+         "one award whose period-of-performance start predates FY22 - these are the ones most likely "
+         "to show outlay > obligation for legitimate reasons."),
     ]
+    if extra_rows:
+        rows.extend(extra_rows)
     return pd.DataFrame(rows, columns=["Caveat", "Plain-English explanation"])
 
 
@@ -539,7 +560,8 @@ def sheet_glossary() -> pd.DataFrame:
 
 
 def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series,
-                           outlay_by_uei: pd.Series | None = None) -> pd.DataFrame:
+                           outlay_by_uei: pd.Series | None = None,
+                           pre_fy22_by_uei: pd.Series | None = None) -> pd.DataFrame:
     """Per-recipient roll-up across FY22-FY25 with searchable columns."""
     if txn.empty:
         return pd.DataFrame()
@@ -578,6 +600,13 @@ def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series,
         )
     else:
         out["Total Cumulative Outlays"] = 0
+    if pre_fy22_by_uei is not None:
+        out["Has Pre-FY22 Award History"] = (
+            pd.Series(out.index, index=out.index).map(pre_fy22_by_uei)
+            .fillna(False).map({True: "Yes", False: "No"})
+        )
+    else:
+        out["Has Pre-FY22 Award History"] = ""
     out["UEI"] = out.index
     out["USAspending Search URL"] = out.apply(
         lambda r: usaspending_search_url(r["Recipient Name"], r["UEI"]), axis=1,
@@ -625,6 +654,7 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
                             awards: pd.DataFrame,
                             names_by_uei: pd.Series,
                             outlay_by_uei: pd.Series,
+                            pre_fy22_by_uei: pd.Series,
                             title_lookup: dict[str, str], snapshot_info: dict) -> None:
     LOG.info("Building %s", out_path)
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
@@ -703,13 +733,15 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
         # Top 50 recipients per panel — the headline QA artifact
         for cat, label in PANELS:
             df = sheet_top_recipients(txn, cat, names_by_uei,
-                                      outlay_by_uei=outlay_by_uei, top_n=50)
+                                      outlay_by_uei=outlay_by_uei,
+                                      pre_fy22_by_uei=pre_fy22_by_uei, top_n=50)
             write_sheet(writer, f"Top 50 - {label}", df,
                         title=f"Top 50 recipients by FY22-FY25 obligations — {label}",
                         dollar_columns=["Total Obligations (FY22-FY25)", "FY22", "FY23",
                                         "FY24", "FY25", "Total Cumulative Outlays"],
                         col_widths={"Recipient Name": 38, "Panel Sub-cut": 18,
                                     "Total Cumulative Outlays": 22,
+                                    "Has Pre-FY22 Award History": 18,
                                     "USAspending Search URL": 50, "Reviewer Notes": 36})
 
         # Geographic breakouts (Tier C - mapping)
@@ -759,6 +791,7 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                                     rfilter: pd.DataFrame, txn_raw: pd.DataFrame,
                                     names_by_uei: pd.Series,
                                     outlay_by_uei: pd.Series,
+                                    pre_fy22_by_uei: pd.Series,
                                     code_to_label: dict[str, str],
                                     snapshot_info: dict) -> None:
     LOG.info("Building %s", out_path)
@@ -777,7 +810,8 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                     col_widths={"": 70})
 
         in_scope = sheet_recipient_lookup(txn, names_by_uei,
-                                          outlay_by_uei=outlay_by_uei)
+                                          outlay_by_uei=outlay_by_uei,
+                                          pre_fy22_by_uei=pre_fy22_by_uei)
         write_sheet(writer, "In-Scope Recipients", in_scope,
                     title="All 501(c)(3) recipients in scope (FY22-FY25 union)",
                     dollar_columns=["FY22 Obligations", "FY23 Obligations",
@@ -788,7 +822,8 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                                 "Congressional District": 16,
                                 "Panel": 22, "Panel Sub-cut": 18,
                                 "Business Types Tagged": 18,
-                                "Total Cumulative Outlays": 22, "UEI": 14,
+                                "Total Cumulative Outlays": 22,
+                                "Has Pre-FY22 Award History": 18, "UEI": 14,
                                 "USAspending Search URL": 50})
 
         excluded = sheet_top_excluded(rfilter, txn_raw, code_to_label, top_n=200)
@@ -849,11 +884,22 @@ def main():
         ).fillna(0)
         outlay_by_uei = (awards.groupby("recipient_uei")["cumulative_outlay"]
                                 .sum())
+        # Pre-FY22 flag at the recipient level: True if ANY of the recipient's
+        # awards predates FY22. Used in the QA workbook to mark recipients
+        # whose outlay-vs-obligation comparison may be misleading.
+        if "pre_fy22_award" in awards.columns:
+            pre_fy22_by_uei = (awards.groupby("recipient_uei")["pre_fy22_award"]
+                                     .any())
+        else:
+            pre_fy22_by_uei = pd.Series(dtype=bool)
         LOG.info("Loaded %d in-scope transactions, %d recipients in filter table, %d awards",
                  len(txn), len(rfilter), len(awards))
+        LOG.info("Recipients with pre-FY22 award history: %d / %d",
+                 int(pre_fy22_by_uei.sum()), len(pre_fy22_by_uei))
     else:
         awards = pd.DataFrame()
         outlay_by_uei = pd.Series(dtype=float)
+        pre_fy22_by_uei = pd.Series(dtype=bool)
         LOG.warning("Awards parquet missing at %s; outlay sheets will be skipped", awards_path)
 
     # The lightweight analytic table doesn't carry recipient_name (the
@@ -884,11 +930,12 @@ def main():
     snapshot_info = latest_lightweight_manifest()
 
     build_headline_workbook(out_dir / "Headline_Summary.xlsx", txn, awards,
-                            names_by_uei, outlay_by_uei,
+                            names_by_uei, outlay_by_uei, pre_fy22_by_uei,
                             title_lookup, snapshot_info)
     build_recipient_lookup_workbook(out_dir / "Recipient_Lookup.xlsx",
                                     txn, rfilter, txn_raw, names_by_uei,
-                                    outlay_by_uei, code_to_label, snapshot_info)
+                                    outlay_by_uei, pre_fy22_by_uei,
+                                    code_to_label, snapshot_info)
 
     LOG.info("Done. Files in %s", out_dir)
     for p in sorted(out_dir.glob("*.xlsx")):
