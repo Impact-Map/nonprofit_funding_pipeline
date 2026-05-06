@@ -96,28 +96,53 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
 
     # Columns from Section 11.
     column_specs: list[tuple[str, str | None]] = [
+        # Identity / dates
         ("fy", None),
         ("action_date", None),
         ("award_id_unique", None),
         ("transaction_id", None),
         ("award_type_code", None),
         ("action_type", None),
+        # Awarding
         ("awarding_agency_name", "awarding_agency"),
         ("awarding_sub_agency_name", "awarding_subagency"),
         ("assistance_listing_number", None),
+        # Recipient identity & match
         ("recipient_uei", None),
+        ("recipient_name", None),
         ("irs_ein", "recipient_ein"),
-        ("recipient_state_code", "recipient_state"),
         ("match_tier", None),
         ("bmf_foundation", None),
         ("bmf_ntee", "bmf_ntee_primary"),
+        # Recipient geography (for mapping)
+        ("recipient_country_code", "recipient_country"),
+        ("recipient_country_name", None),
+        ("recipient_state_code", "recipient_state"),
+        ("recipient_state_name", None),
+        ("recipient_county_name", None),
+        ("prime_award_transaction_recipient_county_fips_code", "recipient_county_fips"),
+        ("recipient_city_name", "recipient_city"),
+        ("recipient_zip_code", "recipient_zip"),
+        ("prime_award_transaction_recipient_cd_current", "recipient_cd"),
+        # Classification
         ("recipient_category", None),
         ("recipient_subcategory", None),
         ("classification_rule_hits", None),
+        # Place of performance geography
         ("primary_place_of_performance_country_code", "place_of_performance_country"),
+        ("primary_place_of_performance_country_name", "place_of_performance_country_name"),
+        ("primary_place_of_performance_state_name", "place_of_performance_state_name"),
+        ("prime_award_transaction_place_of_performance_state_fips_code", "place_of_performance_state_fips"),
+        ("primary_place_of_performance_county_name", "place_of_performance_county_name"),
+        ("prime_award_transaction_place_of_performance_county_fips_code", "place_of_performance_county_fips"),
+        ("primary_place_of_performance_city_name", "place_of_performance_city"),
+        ("primary_place_of_performance_zip_4", "place_of_performance_zip"),
+        ("prime_award_transaction_place_of_performance_cd_current", "place_of_performance_cd"),
+        # External-list match flags
         ("ipeds_match", None),
         ("aha_match", None),
         ("hrsa_uds_match", None),
+        # Money
         ("federal_action_obligation", None),
         ("federal_action_obligation_real", None),
         ("covid_flag", None),

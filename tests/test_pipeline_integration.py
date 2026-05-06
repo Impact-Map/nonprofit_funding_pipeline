@@ -153,6 +153,64 @@ def test_lightweight_pipeline_round_trip(tmp_path):
     assert txn_table["federal_action_obligation_real"].notna().all()
 
 
+def test_geographic_columns_propagate_to_analytic_table():
+    """Geographic fields added in Tier C must survive classify -> tables -> parquet.
+
+    The bug class this catches: a column added to _CLASSIFY_COLUMNS in
+    pipeline.py but forgotten in build_transactions_table column_specs (or
+    vice versa) silently drops the field from the analytic table.
+    """
+    raw = _synthetic_transactions()
+    # Fill in geographic fields the synthetic frame doesn't already set.
+    raw["recipient_country_code"] = "USA"
+    raw["recipient_country_name"] = "UNITED STATES"
+    raw["recipient_state_name"] = "New York"
+    raw["recipient_county_name"] = "Manhattan"
+    raw["prime_award_transaction_recipient_county_fips_code"] = "36061"
+    raw["recipient_city_name"] = "NEW YORK"
+    raw["recipient_zip_code"] = "10001"
+    raw["prime_award_transaction_recipient_cd_current"] = "NY-12"
+    raw["primary_place_of_performance_country_name"] = "UNITED STATES"
+    raw["primary_place_of_performance_state_name"] = "New York"
+    raw["prime_award_transaction_place_of_performance_state_fips_code"] = "36"
+    raw["primary_place_of_performance_county_name"] = "Manhattan"
+    raw["prime_award_transaction_place_of_performance_county_fips_code"] = "36061"
+    raw["primary_place_of_performance_city_name"] = "NEW YORK"
+    raw["primary_place_of_performance_zip_4"] = "10001-1234"
+    raw["prime_award_transaction_place_of_performance_cd_current"] = "NY-12"
+
+    classified, _ = classify(raw)
+    rfilter = pd.DataFrame([
+        {"recipient_uei": "U1", "in_scope": True, "bt_set": "M"},
+        {"recipient_uei": "U2", "in_scope": True, "bt_set": "MX"},
+    ])
+    txn_table = build_transactions_table(classified, rfilter)
+
+    expected_geo_columns = {
+        # Recipient
+        "recipient_country", "recipient_country_name",
+        "recipient_state", "recipient_state_name",
+        "recipient_county_name", "recipient_county_fips",
+        "recipient_city", "recipient_zip", "recipient_cd",
+        # POP
+        "place_of_performance_country", "place_of_performance_country_name",
+        "place_of_performance_state_name", "place_of_performance_state_fips",
+        "place_of_performance_county_name", "place_of_performance_county_fips",
+        "place_of_performance_city", "place_of_performance_zip",
+        "place_of_performance_cd",
+    }
+    missing = expected_geo_columns - set(txn_table.columns)
+    assert not missing, f"Geographic columns missing from analytic table: {missing}"
+
+    # Spot-check a row's values made it through (U1 has hospital classification)
+    u1 = txn_table[txn_table["recipient_uei"] == "U1"].iloc[0]
+    assert u1["recipient_state"] == "NY"
+    assert u1["recipient_city"] == "NEW YORK"
+    assert u1["recipient_zip"] == "10001"
+    assert u1["recipient_cd"] == "NY-12"
+    assert u1["place_of_performance_state_name"] == "New York"
+
+
 def test_panel_arithmetic_invariant():
     """In any classified frame, sum of obligations across the four panels
     must equal the total. If a transaction landed in two panels (or zero),

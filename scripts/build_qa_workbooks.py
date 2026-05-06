@@ -334,6 +334,92 @@ def sheet_top_recipients(txn: pd.DataFrame, panel: str,
     ]]
 
 
+def sheet_top_recipient_states(txn: pd.DataFrame) -> pd.DataFrame:
+    """State-level breakdown of recipient locations, all panels combined."""
+    if txn.empty or "recipient_state" not in txn.columns:
+        return pd.DataFrame()
+    g = (txn.groupby("recipient_state", dropna=False, observed=False)
+            .agg(total=("federal_action_obligation", "sum"),
+                 unique_recipients=("recipient_uei", lambda s: s.nunique()),
+                 transactions=("transaction_id", "count"))
+            .reset_index())
+    g = g.dropna(subset=["recipient_state"])
+    total_dollars = g["total"].sum() or 1
+    g["share"] = g["total"] / total_dollars
+    g["State Name"] = g["recipient_state"].map(state_name)
+    g = g.sort_values("total", ascending=False).reset_index(drop=True)
+    g["Rank"] = g.index + 1
+    g = g.rename(columns={
+        "recipient_state": "State Code",
+        "total": "Total Obligations",
+        "unique_recipients": "Unique Recipients",
+        "transactions": "Transactions",
+        "share": "Share of Total",
+    })
+    return g[["Rank", "State Code", "State Name", "Total Obligations",
+              "Share of Total", "Unique Recipients", "Transactions"]]
+
+
+def sheet_top_pop_states(txn: pd.DataFrame) -> pd.DataFrame:
+    """Place-of-performance state breakdown across domestic transactions.
+
+    POP-state is most informative for state-level program analysis (where
+    is the federal money actually being spent?). For International, POP
+    is country-level so this sheet is filtered to USA POP only.
+    """
+    if "place_of_performance_state_name" not in txn.columns:
+        return pd.DataFrame()
+    pop_country = txn.get("place_of_performance_country", pd.Series([""] * len(txn)))
+    domestic = txn[pop_country.fillna("").astype(str).str.upper().isin(["USA", ""])]
+    if domestic.empty:
+        return pd.DataFrame()
+    g = (domestic.groupby("place_of_performance_state_name", dropna=False, observed=False)
+                 .agg(total=("federal_action_obligation", "sum"),
+                      unique_recipients=("recipient_uei", lambda s: s.nunique()),
+                      transactions=("transaction_id", "count"))
+                 .reset_index())
+    g = g.dropna(subset=["place_of_performance_state_name"])
+    g = g[g["place_of_performance_state_name"].astype(str).str.strip() != ""]
+    total_dollars = g["total"].sum() or 1
+    g["share"] = g["total"] / total_dollars
+    g = g.sort_values("total", ascending=False).reset_index(drop=True)
+    g["Rank"] = g.index + 1
+    g = g.rename(columns={
+        "place_of_performance_state_name": "POP State",
+        "total": "Total Obligations",
+        "unique_recipients": "Unique Recipients",
+        "transactions": "Transactions",
+        "share": "Share of Total",
+    })
+    return g[["Rank", "POP State", "Total Obligations",
+              "Share of Total", "Unique Recipients", "Transactions"]]
+
+
+def sheet_top_recipient_counties(txn: pd.DataFrame, top_n: int = 100) -> pd.DataFrame:
+    """Top-N counties by recipient location."""
+    if "recipient_county_name" not in txn.columns or "recipient_state" not in txn.columns:
+        return pd.DataFrame()
+    g = (txn.groupby(["recipient_state", "recipient_county_name"],
+                     dropna=False, observed=False)
+            .agg(total=("federal_action_obligation", "sum"),
+                 unique_recipients=("recipient_uei", lambda s: s.nunique()),
+                 transactions=("transaction_id", "count"))
+            .reset_index())
+    g = g.dropna(subset=["recipient_state", "recipient_county_name"])
+    g = g[g["recipient_county_name"].astype(str).str.strip() != ""]
+    g["State"] = g["recipient_state"].map(state_name)
+    g = g.sort_values("total", ascending=False).head(top_n).reset_index(drop=True)
+    g["Rank"] = g.index + 1
+    g = g.rename(columns={
+        "recipient_county_name": "County",
+        "total": "Total Obligations",
+        "unique_recipients": "Unique Recipients",
+        "transactions": "Transactions",
+    })
+    return g[["Rank", "State", "County", "Total Obligations",
+              "Unique Recipients", "Transactions"]]
+
+
 def sheet_yoy_change(txn: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
     """Largest agency-level FY22 → FY25 changes."""
     f = txn[txn["fy"].isin([2022, 2025])]
@@ -434,6 +520,15 @@ def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series) -> pd.Dat
     out = pd.DataFrame(index=fy_pivot.index)
     out["Recipient Name"] = pd.Series(out.index, index=out.index).map(names_by_uei).fillna("")
     out["State"] = last["recipient_state"].map(state_name)
+    # Geographic context (Tier C - mapping fields). Pulled from the analytic
+    # table when present; missing columns degrade silently to empty strings.
+    for col, label in [
+        ("recipient_city", "City"),
+        ("recipient_county_name", "County"),
+        ("recipient_zip", "ZIP"),
+        ("recipient_cd", "Congressional District"),
+    ]:
+        out[label] = last[col].fillna("") if col in last.columns else ""
     out["Panel"] = last["recipient_category"].map(dict(PANELS))
     out["Panel Sub-cut"] = last["recipient_subcategory"].fillna("")
     out["Business Types Tagged"] = last["business_types_set"].fillna("").map(fmt_business_types)
@@ -505,9 +600,12 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
             ("3. Top 25 Agencies tabs", "One per panel - which agencies fund each panel?"),
             ("4. Top 25 Programs tabs", "One per panel - which CFDA programs?"),
             ("5. Top 50 Recipients tabs", "One per panel. Use this for spot-check QA: do these orgs match what you'd expect?"),
-            ("6. YoY Change tab", "Largest agency-level changes from FY22 to FY25"),
-            ("7. Caveats tab", "Plain-English limitations of this analysis"),
-            ("8. Glossary tab", "Definitions of any technical terms used"),
+            ("6. By Recipient State tab", "All 51 states/territories ranked by total dollars and recipient count"),
+            ("7. By POP State tab", "Place-of-performance state breakdown (where the work is happening)"),
+            ("8. Top Recipient Counties tab", "Top 100 counties by recipient location"),
+            ("9. YoY Change tab", "Largest agency-level changes from FY22 to FY25"),
+            ("10. Caveats tab", "Plain-English limitations of this analysis"),
+            ("11. Glossary tab", "Definitions of any technical terms used"),
             ("", ""),
             ("For QA spot-checks, focus on Top 50 Recipients tabs:", ""),
             ("- Are the named organizations actually 501(c)(3)?", ""),
@@ -554,6 +652,34 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
                         col_widths={"Recipient Name": 38, "Panel Sub-cut": 18,
                                     "USAspending Search URL": 50, "Reviewer Notes": 36})
 
+        # Geographic breakouts (Tier C - mapping)
+        df_states = sheet_top_recipient_states(txn)
+        if not df_states.empty:
+            write_sheet(writer, "By Recipient State", df_states,
+                        title="Recipients ranked by state — total dollars and unique organizations",
+                        dollar_columns=["Total Obligations"],
+                        percent_columns=["Share of Total"],
+                        col_widths={"State Code": 12, "State Name": 24,
+                                    "Total Obligations": 22, "Share of Total": 14,
+                                    "Unique Recipients": 18, "Transactions": 14, "Rank": 8})
+        df_pop = sheet_top_pop_states(txn)
+        if not df_pop.empty:
+            write_sheet(writer, "By POP State (domestic)", df_pop,
+                        title="Place-of-performance state breakdown — where the work is happening (USA POP only)",
+                        dollar_columns=["Total Obligations"],
+                        percent_columns=["Share of Total"],
+                        col_widths={"POP State": 30, "Total Obligations": 22,
+                                    "Share of Total": 14, "Unique Recipients": 18,
+                                    "Transactions": 14, "Rank": 8})
+        df_counties = sheet_top_recipient_counties(txn, top_n=100)
+        if not df_counties.empty:
+            write_sheet(writer, "Top 100 Recipient Counties", df_counties,
+                        title="Top 100 counties by total recipient obligations",
+                        dollar_columns=["Total Obligations"],
+                        col_widths={"State": 22, "County": 30,
+                                    "Total Obligations": 22, "Unique Recipients": 18,
+                                    "Transactions": 14, "Rank": 8})
+
         write_sheet(writer, "YoY Change FY22-FY25", sheet_yoy_change(txn),
                     title="Largest agency-level changes from FY22 to FY25",
                     dollar_columns=["FY22 Obligations", "FY25 Obligations", "Change ($)"],
@@ -596,6 +722,8 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                                     "FY24 Obligations", "FY25 Obligations",
                                     "Total FY22-FY25"],
                     col_widths={"Recipient Name": 40, "State": 16,
+                                "City": 22, "County": 22, "ZIP": 12,
+                                "Congressional District": 16,
                                 "Panel": 22, "Panel Sub-cut": 18,
                                 "Business Types Tagged": 18, "UEI": 14,
                                 "USAspending Search URL": 50})

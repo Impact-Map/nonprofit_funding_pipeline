@@ -62,15 +62,35 @@ _MATCH_COLUMNS = (
 )
 
 _CLASSIFY_COLUMNS = (
-    "transaction_id", "award_id_unique", "action_date", "award_type_code",
-    "action_type", "awarding_agency_name", "awarding_sub_agency_name",
+    # Identity & dates
+    "transaction_id", "award_id_unique", "generated_unique_award_id",
+    "action_date", "award_type_code", "action_type",
+    # Awarding
+    "awarding_agency_name", "awarding_sub_agency_name",
     "assistance_listing_number", "assistance_listing_title",
-    "recipient_uei", "recipient_name", "recipient_state_code",
-    "recipient_business_types", "primary_place_of_performance_country_code",
+    "program_activity_name",
+    # Recipient identity & business types
+    "recipient_uei", "recipient_name",
+    "recipient_business_types",
+    # Recipient geography (for mapping & geographic analysis)
+    "recipient_country_code", "recipient_country_name",
+    "recipient_state_code", "recipient_state_name",
+    "recipient_county_name", "prime_award_transaction_recipient_county_fips_code",
+    "recipient_city_name", "recipient_zip_code",
+    "prime_award_transaction_recipient_cd_current",
+    # Place of performance geography
+    "primary_place_of_performance_country_code",
+    "primary_place_of_performance_country_name",
+    "primary_place_of_performance_state_name",
+    "prime_award_transaction_place_of_performance_state_fips_code",
+    "primary_place_of_performance_county_name",
+    "prime_award_transaction_place_of_performance_county_fips_code",
+    "primary_place_of_performance_city_name",
+    "primary_place_of_performance_zip_4",
+    "prime_award_transaction_place_of_performance_cd_current",
+    # Money
     "federal_action_obligation",
     "total_outlayed_amount_for_overall_award",
-    "generated_unique_award_id",
-    "program_activity_name",
 )
 
 
