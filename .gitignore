@@ -69,3 +69,6 @@ desktop.ini
 # Temporary unpack of the methodology .docx during exploration.
 _unpacked/
 methodology.txt
+
+# Methodology source/output (working artifacts, not code)
+Methodology_*.docx
