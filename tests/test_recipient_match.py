@@ -89,6 +89,34 @@ def test_tier3_probabilistic_name_state_match():
     assert match.iloc[0]["irs_ein"] == "222222222"
 
 
+def test_tier3_rejects_token_set_ratio_false_positive():
+    """Regression: state agencies vs single-token Q-series 501c3 names.
+
+    On the FY24 production run, "GEORGIA DEPARTMENT OF COMMUNITY HEALTH"
+    Tier-3 matched "GEORGIA FOR GEORGIA INC" (NTEE Q30) at 100% under
+    token_set_ratio because the BMF org name normalized to {georgia}. The
+    bad match then cascaded $12.4B of Medicaid into the International panel
+    because the Q-series + >$100k rule fired. token_sort_ratio rejects this
+    because it doesn't collapse duplicate tokens.
+    """
+    txn = _txn([
+        {"recipient_uei": "U1",
+         "recipient_name": "Georgia Department of Community Health",
+         "recipient_state_code": "GA",
+         "federal_action_obligation": "200000000"},
+    ])
+    bmf = _bmf([
+        {"EIN": "111111111", "NAME": "Georgia for Georgia Inc",
+         "STATE": "GA", "NTEE_CD": "Q30", "FOUNDATION": "15"},
+    ])
+    match, stats, _ = build_recipient_match(txn, bmf)
+    # Must NOT match - state agency is not a 501(c)(3).
+    assert stats.tier3_prob_name == 0
+    assert stats.tier5_unresolved == 1
+    assert match.iloc[0]["irs_ein"] == ""
+    assert match.iloc[0]["match_tier"] == 5
+
+
 def test_tier5_unresolved_review_queue():
     txn = _txn([
         {"recipient_uei": "U1", "recipient_name": "Some Org Nobody Knows",

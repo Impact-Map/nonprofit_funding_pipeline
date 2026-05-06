@@ -47,11 +47,43 @@ LOG = logging.getLogger("usasp.pipeline")
 # ---------------------------------------------------------------------------
 
 
-def _read_transactions() -> pd.DataFrame:
+# Columns each downstream step actually consumes. Reading only what's needed
+# keeps the four-FY load under ~3 GB instead of ~30 GB (113 cols * dtype=str).
+_MATCH_COLUMNS = (
+    "recipient_uei", "recipient_duns", "recipient_name", "recipient_state_code",
+    "recipient_ein", "federal_action_obligation", "action_date",
+    "awarding_agency_name",  # for the match coverage report
+)
+
+_CLASSIFY_COLUMNS = (
+    "transaction_id", "award_id_unique", "action_date", "award_type_code",
+    "action_type", "awarding_agency_name", "awarding_sub_agency_name",
+    "assistance_listing_number", "assistance_listing_title",
+    "recipient_uei", "recipient_name", "recipient_state_code",
+    "recipient_business_types", "primary_place_of_performance_country_code",
+    "federal_action_obligation",
+    "total_outlayed_amount_for_overall_award",
+    "generated_unique_award_id",
+    "program_activity_name",
+)
+
+
+def _read_transactions(columns: tuple[str, ...] | None = None) -> pd.DataFrame:
     parts = sorted(config.INTERIM.glob("transactions_fy*.parquet"))
     if not parts:
         raise FileNotFoundError("No transactions parquet under /interim. Run --acquire first.")
-    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    if columns is None:
+        return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    # Project columns at read time. Use pyarrow metadata to skip columns that
+    # don't exist in a given parquet (different acquisition sources include
+    # different column subsets).
+    import pyarrow.parquet as pq
+    frames = []
+    for p in parts:
+        schema_cols = set(pq.read_metadata(p).schema.to_arrow_schema().names)
+        wanted = [c for c in columns if c in schema_cols]
+        frames.append(pd.read_parquet(p, columns=wanted))
+    return pd.concat(frames, ignore_index=True)
 
 
 def _read_bmf() -> pd.DataFrame:
@@ -158,7 +190,7 @@ def step_sam(run_manifest: manifest_mod.RunManifest) -> None:
 
 def step_match(run_manifest: manifest_mod.RunManifest) -> None:
     LOG.info("Step 4: build recipient_match")
-    txn = _read_transactions()
+    txn = _read_transactions(columns=_MATCH_COLUMNS)
     bmf = _read_bmf()
     sam_df = _read_sam()
     match_df, stats, review = recipient_match.build_recipient_match(txn, bmf, sam_df)
@@ -174,7 +206,7 @@ def step_match(run_manifest: manifest_mod.RunManifest) -> None:
 
 def step_classify(run_cfg: config.RunConfig, run_manifest: manifest_mod.RunManifest) -> None:
     LOG.info("Step 5: category classification")
-    txn = _read_transactions()
+    txn = _read_transactions(columns=_CLASSIFY_COLUMNS)
     match_df = _read_match_table()
 
     aha_eins = _load_optional_eins("aha_eins.txt")

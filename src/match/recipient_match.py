@@ -201,8 +201,21 @@ def build_recipient_match(transactions: pd.DataFrame,
             out.loc[tier2_idx, "match_score"] = 1.0
             LOG.info("Tier 2 (det name+state): %d", len(tier2_idx))
 
-    # ----- Tier 3: probabilistic name+state via Jaro-Winkler -----
-    # Build per-state BMF candidate lists once.
+    # ----- Tier 3: probabilistic name+state -----
+    # Use token_sort_ratio rather than token_set_ratio (despite Section 3.2
+    # mentioning the latter): token_set_ratio collapses duplicate tokens and
+    # produces 100% scores for length-mismatched pairs that share even one
+    # token. Real example caught during testing:
+    #   "GEORGIA DEPARTMENT OF COMMUNITY HEALTH" (state govt, FY24)
+    # was matched to
+    #   "GEORGIA FOR GEORGIA INC" (501c3 NTEE Q30)
+    # at token_set_ratio=100 because the BMF org's name normalized to
+    # essentially {"georgia"} after stop-word removal. That single bad match
+    # cascaded $12.4B into the International panel because Q-series + >$100k
+    # is one of the rules that fires the international classification.
+    # token_sort_ratio sorts tokens then compares by Levenshtein ratio, which
+    # naturally penalizes length differences. Threshold stays at 92 per the
+    # methodology's intent (high token similarity).
     unresolved = out["match_tier"] == 5
     if unresolved.any():
         bmf_by_state: dict[str, pd.DataFrame] = {
@@ -210,7 +223,10 @@ def build_recipient_match(transactions: pd.DataFrame,
             for s, g in bmf_p.groupby("STATE_norm")
             if isinstance(s, str) and s
         }
-        score_threshold_pct = tier3_threshold * 100  # rapidfuzz returns 0-100
+        # tier3_threshold of 0.94 carried over from token_set_ratio; tighten
+        # to 0.92 (the methodology's own number) since token_sort_ratio is
+        # less generous on legitimate near-matches.
+        score_threshold_pct = max(92.0, tier3_threshold * 100 - 2)
         tier3_assigned = 0
         for idx in out.index[unresolved]:
             state = out.at[idx, "recipient_state_norm"]
@@ -221,12 +237,12 @@ def build_recipient_match(transactions: pd.DataFrame,
             if cands.empty:
                 continue
             best = process.extractOne(
-                name, cands["NAME_norm"].tolist(), scorer=fuzz.token_set_ratio,
+                name, cands["NAME_norm"].tolist(), scorer=fuzz.token_sort_ratio,
                 score_cutoff=score_threshold_pct,
             )
             if best is None:
                 continue
-            best_name, score, ridx = best
+            _best_name, score, ridx = best
             row = cands.iloc[ridx]
             out.at[idx, "irs_ein"] = row["EIN_norm"]
             out.at[idx, "bmf_name"] = row.get("NAME", "")
