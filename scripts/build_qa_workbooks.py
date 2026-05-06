@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Iterable
 
@@ -94,6 +95,16 @@ def fmt_business_types(s: str | None) -> str:
     if not s or not isinstance(s, str):
         return ""
     return ", ".join(sorted(s))
+
+
+def usaspending_search_url(name: str | None, uei: str | None) -> str:
+    """USAspending keyword-search URL. Use recipient name when available
+    (more readable; the recipient profile is the first result), fall back
+    to UEI which is unique and always finds exactly that recipient."""
+    keyword = (name or "").strip() or (uei or "").strip()
+    if not keyword:
+        return ""
+    return f"https://www.usaspending.gov/keyword_search/{urllib.parse.quote(keyword)}"
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +299,7 @@ def sheet_top_recipients(txn: pd.DataFrame, panel: str,
         return pd.DataFrame(columns=[
             "Recipient Name", "State", "Panel Sub-cut", "Total Obligations (FY22-FY25)",
             "FY22", "FY23", "FY24", "FY25",
-            "USAspending Profile URL", "Reviewer Notes",
+            "USAspending Search URL", "Reviewer Notes",
         ])
     by_uei = (sub.groupby("recipient_uei")
                 .agg(total=("federal_action_obligation", "sum"))
@@ -306,8 +317,9 @@ def sheet_top_recipients(txn: pd.DataFrame, panel: str,
     out["Recipient Name"] = out["recipient_uei"].map(names_by_uei).fillna("")
     out["State"] = out["recipient_uei"].map(last["recipient_state"]).map(state_name)
     out["Panel Sub-cut"] = out["recipient_uei"].map(last["recipient_subcategory"]).fillna("")
-    out["USAspending Profile URL"] = out["recipient_uei"].apply(
-        lambda u: f"https://www.usaspending.gov/recipient/{u}/all"
+    out["USAspending Search URL"] = out.apply(
+        lambda r: usaspending_search_url(r["Recipient Name"], r["recipient_uei"]),
+        axis=1,
     )
     out["Reviewer Notes"] = ""
     out = out.rename(columns={
@@ -318,7 +330,7 @@ def sheet_top_recipients(txn: pd.DataFrame, panel: str,
         "Recipient Name", "State", "Panel Sub-cut",
         "Total Obligations (FY22-FY25)",
         "FY22", "FY23", "FY24", "FY25",
-        "USAspending Profile URL", "Reviewer Notes",
+        "USAspending Search URL", "Reviewer Notes",
     ]]
 
 
@@ -432,8 +444,8 @@ def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series) -> pd.Dat
     out["Total FY22-FY25"] = (fy_pivot[2022] + fy_pivot[2023] +
                               fy_pivot[2024] + fy_pivot[2025])
     out["UEI"] = out.index
-    out["USAspending Profile URL"] = out["UEI"].apply(
-        lambda u: f"https://www.usaspending.gov/recipient/{u}/all"
+    out["USAspending Search URL"] = out.apply(
+        lambda r: usaspending_search_url(r["Recipient Name"], r["UEI"]), axis=1,
     )
     return out.sort_values("Total FY22-FY25", ascending=False).reset_index(drop=True)
 
@@ -454,8 +466,9 @@ def sheet_top_excluded(rfilter: pd.DataFrame, txn_raw: pd.DataFrame,
     )
     excluded["State"] = excluded["recipient_state"].map(state_name)
     excluded["Business Types Tagged"] = excluded["bt_set"].fillna("").map(fmt_business_types)
-    excluded["USAspending Profile URL"] = excluded["recipient_uei"].apply(
-        lambda u: f"https://www.usaspending.gov/recipient/{u}/all"
+    excluded["USAspending Search URL"] = excluded.apply(
+        lambda r: usaspending_search_url(r.get("recipient_name"), r["recipient_uei"]),
+        axis=1,
     )
     excluded = excluded.rename(columns={
         "recipient_name": "Recipient Name",
@@ -465,7 +478,7 @@ def sheet_top_excluded(rfilter: pd.DataFrame, txn_raw: pd.DataFrame,
     excluded = excluded.sort_values("Total FY22-FY25 Obligations", ascending=False).head(top_n)
     return excluded[[
         "Recipient Name", "State", "Total FY22-FY25 Obligations",
-        "Why Excluded", "Business Types Tagged", "UEI", "USAspending Profile URL",
+        "Why Excluded", "Business Types Tagged", "UEI", "USAspending Search URL",
     ]].reset_index(drop=True)
 
 
@@ -500,7 +513,7 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
             ("- Are the named organizations actually 501(c)(3)?", ""),
             ("- Are they assigned to the right panel?", ""),
             ("- Is the dollar magnitude in line with what you know?", ""),
-            ("- Click the USAspending Profile URL for any recipient to verify", ""),
+            ("- Click the USAspending Search URL for any recipient to verify", ""),
         ], columns=["", ""])
         write_sheet(writer, "Cover", cover, freeze_header=False, add_filter=False,
                     col_widths={"": 60})
@@ -539,7 +552,7 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
                         title=f"Top 50 recipients by FY22-FY25 obligations — {label}",
                         dollar_columns=["Total Obligations (FY22-FY25)", "FY22", "FY23", "FY24", "FY25"],
                         col_widths={"Recipient Name": 38, "Panel Sub-cut": 18,
-                                    "USAspending Profile URL": 50, "Reviewer Notes": 36})
+                                    "USAspending Search URL": 50, "Reviewer Notes": 36})
 
         write_sheet(writer, "YoY Change FY22-FY25", sheet_yoy_change(txn),
                     title="Largest agency-level changes from FY22 to FY25",
@@ -585,7 +598,7 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                     col_widths={"Recipient Name": 40, "State": 16,
                                 "Panel": 22, "Panel Sub-cut": 18,
                                 "Business Types Tagged": 18, "UEI": 14,
-                                "USAspending Profile URL": 50})
+                                "USAspending Search URL": 50})
 
         excluded = sheet_top_excluded(rfilter, txn_raw, code_to_label, top_n=200)
         write_sheet(writer, "Top 200 Excluded", excluded,
@@ -593,7 +606,7 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                     dollar_columns=["Total FY22-FY25 Obligations"],
                     col_widths={"Recipient Name": 40, "State": 18,
                                 "Why Excluded": 70, "Business Types Tagged": 22,
-                                "UEI": 14, "USAspending Profile URL": 50})
+                                "UEI": 14, "USAspending Search URL": 50})
 
 
 # ---------------------------------------------------------------------------
