@@ -70,5 +70,7 @@ desktop.ini
 _unpacked/
 methodology.txt
 
-# Methodology source/output (working artifacts, not code)
+# Methodology source/output (working artifacts, not code).
+# Exception: the lightweight companion methodology IS a tracked deliverable.
 Methodology_*.docx
+!Methodology_FederalAssistance_501c3_Lightweight_FY22-FY25.docx

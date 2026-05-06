@@ -82,6 +82,42 @@ Switch deflator:
 python pipeline.py --tables --deflator GDP
 ```
 
+## Phase 1 lightweight mode
+
+The pipeline supports two methodologies:
+
+- **Full (default)** — IRS BMF cross-reference, 5-tier match, NTEE/IPEDS/AHA/HRSA-driven
+  carve-outs. See `Methodology_FederalAssistance_501c3_FY22-FY25.docx`.
+- **Phase 1 lightweight** — USAspending data only. Recipient identification
+  via the `business_types_code='M'` rule with mutually-exclusive co-tag
+  exclusions. Heuristic name-based carve-outs for Educational and Hospital.
+  See `Methodology_FederalAssistance_501c3_Lightweight_FY22-FY25.docx`.
+
+To run Phase 1 lightweight end-to-end:
+
+```
+python3 pipeline.py --lightweight --all
+```
+
+Or stage by stage:
+
+```
+python3 pipeline.py --lightweight --acquire    # same data acquisition path
+python3 pipeline.py --lightweight --match      # M-with-exclusions filter (no BMF)
+python3 pipeline.py --lightweight --classify   # heuristic panel carve-outs
+python3 pipeline.py --lightweight --tables
+python3 pipeline.py --lightweight --exhibits   # writes under exhibits/lightweight/
+python3 pipeline.py --lightweight --qa
+```
+
+Lightweight outputs go under `exhibits/lightweight/` so they don't collide
+with the full-pipeline outputs. Both can coexist in the same project tree;
+when both have run, the lightweight pipeline produces a reconciliation
+exhibit (`exhibit_15_reconciliation_*.csv`) comparing Topline numbers
+side-by-side.
+
+Lightweight wall time on FY22–FY25: ~15–30 min (no Tier 3 fuzzy match).
+
 ## Acquisition sources
 
 The pipeline can pull USASpending data three ways. Pick one with `--acquire-source`:

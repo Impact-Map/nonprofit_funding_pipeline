@@ -1,0 +1,32 @@
+# Recipient-name patterns flagging a recipient as Hospital in Phase 1
+# (lightweight methodology Section 4.3). Applied case-insensitive after the
+# canonical name normalization.
+version: "2026-05-06.v1"
+
+# Each entry is (label, regex). Label appears in classification_rule_hits
+# audit trail. Use \b for word boundaries.
+patterns:
+  - label: "name_hospital"
+    regex: "\\bhospital\\b"
+  - label: "name_medical_center"
+    regex: "\\bmedical center\\b"
+  - label: "name_health_system"
+    regex: "\\bhealth system\\b"
+  - label: "name_cancer_center"
+    regex: "\\bcancer center\\b"
+  - label: "name_childrens_hospital"
+    regex: "\\bchildrens? hospital\\b"
+  - label: "name_academic_medical_center"
+    regex: "\\bacademic medical center\\b"
+  - label: "name_teaching_hospital"
+    regex: "\\bteaching hospital\\b"
+
+# Exclusions: names that match a positive pattern but are clearly NOT a
+# hospital (advocacy groups, foundations, etc.). Patterns here veto the flag.
+exclusions:
+  - label: "excl_hospital_foundation"
+    regex: "\\bhospital foundation\\b"
+  - label: "excl_hospital_association"
+    regex: "\\bhospital association\\b"
+  - label: "excl_hospital_auxiliary"
+    regex: "\\bhospital auxiliary\\b"

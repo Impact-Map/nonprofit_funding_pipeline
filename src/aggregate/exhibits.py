@@ -231,9 +231,15 @@ def exhibit_14_cross_tabs(txn: pd.DataFrame) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
 
     # 14.1 - Recipient type within International (NTEE-derived bucketing).
+    # The lightweight schema doesn't carry bmf_ntee_primary; in that case we
+    # emit only an "other" bucket. The fallback Series must reuse the input
+    # frame's index so boolean alignment in bucket.loc[...] works.
     intl = txn[txn["recipient_category"] == "international"].copy()
     if not intl.empty:
-        ntee = intl.get("bmf_ntee_primary", pd.Series([""] * len(intl))).fillna("").astype(str).str.upper()
+        if "bmf_ntee_primary" in intl.columns:
+            ntee = intl["bmf_ntee_primary"].fillna("").astype(str).str.upper()
+        else:
+            ntee = pd.Series("", index=intl.index)
         bucket = pd.Series("other", index=intl.index)
         bucket.loc[ntee.str.startswith("B")] = "educational"
         bucket.loc[ntee.str.startswith("E")] = "hospital"
@@ -263,18 +269,21 @@ def exhibit_14_cross_tabs(txn: pd.DataFrame) -> dict[str, pd.DataFrame]:
         )
 
     # 14.3 - Recipient-type-only parallel view (ignore intl flag, classify on
-    # recipient type alone using NTEE prefix and business types).
-    base = txn.copy()
-    ntee = base.get("bmf_ntee_primary", pd.Series([""] * len(base))).fillna("").astype(str).str.upper()
-    rec_type = pd.Series("core", index=base.index)
-    rec_type.loc[ntee.str.startswith("B")] = "educational"
-    rec_type.loc[(ntee >= "E20") & (ntee <= "E32")] = "hospital"
-    rec_type.loc[ntee.str.startswith("Q")] = "intl_ngo"
-    out["recipient_type_only"] = (
-        base.assign(_rt=rec_type)
-        .groupby(["fy", "_rt"], dropna=False, observed=False)["federal_action_obligation"]
-        .sum().reset_index().rename(columns={"_rt": "recipient_type"})
-    )
+    # recipient type alone using NTEE prefix and business types). Skipped
+    # entirely when NTEE is unavailable (lightweight schema) - methodology
+    # Section 7.1 of the lightweight document drops this cross-tab.
+    if "bmf_ntee_primary" in txn.columns:
+        base = txn.copy()
+        ntee = base["bmf_ntee_primary"].fillna("").astype(str).str.upper()
+        rec_type = pd.Series("core", index=base.index)
+        rec_type.loc[ntee.str.startswith("B")] = "educational"
+        rec_type.loc[(ntee >= "E20") & (ntee <= "E32")] = "hospital"
+        rec_type.loc[ntee.str.startswith("Q")] = "intl_ngo"
+        out["recipient_type_only"] = (
+            base.assign(_rt=rec_type)
+            .groupby(["fy", "_rt"], dropna=False, observed=False)["federal_action_obligation"]
+            .sum().reset_index().rename(columns={"_rt": "recipient_type"})
+        )
 
     return out
 

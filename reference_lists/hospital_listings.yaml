@@ -1,0 +1,28 @@
+# Curated assistance listings + sub-agency keywords flagging Hospital
+# transactions in Phase 1 (lightweight methodology Section 4.3).
+version: "2026-05-06.v1"
+
+# FQHC / Community-clinic flag: HRSA sub-agency AND any of these listings.
+fqhc:
+  subagency_keyword: "Health Resources and Services Administration"
+  listings:
+    - "93.224"   # Health Center Program (Community Health Centers)
+    - "93.527"   # Grants for New and Expanded Services under Health Center Program
+    - "93.116"   # Project Grants and Cooperative Agreements for TB Outreach
+    - "93.224.001"  # variant
+    - "93.250"   # Geriatric Programs
+    - "93.918"   # Grants to Provide Outpatient Early Intervention Services with Respect to HIV Disease
+
+# Research-hospital flag: NIH sub-agency AND research-grant listings,
+# applied only after a name-pattern hospital match (don't flag every NIH
+# grant - many go to universities).
+research:
+  subagency_keyword: "National Institutes of Health"
+  listings_prefix: "93.3"   # Most NIH research listings start 93.3xx
+
+# General hospital-grant flag: any of these listings flag the transaction
+# Hospital regardless of name pattern.
+general:
+  listings:
+    - "93.310"   # Trans-NIH Research Support
+    - "93.288"   # NHSC Scholarship Program
