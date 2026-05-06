@@ -240,3 +240,165 @@ def test_classify_priority_intl_over_hospital():
     _, stats = classify(txn)
     assert stats.rows_international == 1
     assert stats.rows_hospital == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 4: parse_business_types edge cases
+# ---------------------------------------------------------------------------
+
+def test_parse_business_types_separator_variants():
+    assert parse_business_types("M;X|E") == frozenset({"M", "X", "E"})
+    assert parse_business_types("M\tX\nE") == frozenset({"M", "X", "E"})
+    assert parse_business_types("  M  ,  X  ") == frozenset({"M", "X"})
+
+
+def test_parse_business_types_concatenated_no_separator():
+    assert parse_business_types("MNX") == frozenset({"M", "N", "X"})
+    assert parse_business_types("mxe") == frozenset({"M", "X", "E"})
+
+
+def test_parse_business_types_ignores_non_letters():
+    assert parse_business_types("M,1,X") == frozenset({"M", "X"})
+    assert parse_business_types("M, ?, X") == frozenset({"M", "X"})
+
+
+def test_parse_business_types_empty_inputs():
+    assert parse_business_types("") == frozenset()
+    assert parse_business_types(None) == frozenset()
+    assert parse_business_types("   ") == frozenset()
+    assert parse_business_types(",,,") == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# Test 5: FY boundary
+# ---------------------------------------------------------------------------
+
+def test_fy_boundary_sept_30_vs_oct_1():
+    """Federal FY runs Oct 1 - Sep 30. Check the day-of-boundary correctness."""
+    from src.analytic.tables import _fy_from_action_date
+
+    s = pd.Series(["2021-10-01", "2022-09-30", "2022-10-01",
+                   "2024-09-30", "2024-10-01", "2025-09-30"])
+    fy = _fy_from_action_date(s)
+    assert list(fy) == [2022, 2022, 2023, 2024, 2025, 2025]
+
+
+# ---------------------------------------------------------------------------
+# Test 6 + 7: International OR semantics, each rule fires alone
+# ---------------------------------------------------------------------------
+
+def test_international_or_fires_on_pop_alone():
+    """POP non-USA -> International, even if subagency and listing are domestic."""
+    txn = pd.DataFrame([
+        {"transaction_id": "t1", "award_id_unique": "a1", "action_date": "2024-05-01",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "Department of Education",
+         "awarding_sub_agency_name": "Office of Postsecondary Education",
+         "assistance_listing_number": "84.063",
+         "recipient_uei": "U1", "recipient_name": "Some Org",
+         "recipient_state_code": "CT", "primary_place_of_performance_country_code": "KEN",
+         "federal_action_obligation": 100_000},
+    ])
+    _, stats = classify(txn)
+    assert stats.rows_international == 1
+
+
+def test_international_or_fires_on_subagency_alone():
+    """USAID subagency -> International, even with domestic POP and domestic-looking listing."""
+    txn = pd.DataFrame([
+        {"transaction_id": "t1", "award_id_unique": "a1", "action_date": "2024-05-01",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "Agency for International Development",
+         "awarding_sub_agency_name": "United States Agency for International Development",
+         "assistance_listing_number": "84.001",  # not a 19./98./85. prefix
+         "recipient_uei": "U1", "recipient_name": "Some Org",
+         "recipient_state_code": "CT", "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 100_000},
+    ])
+    _, stats = classify(txn)
+    assert stats.rows_international == 1
+
+
+def test_international_or_fires_on_listing_prefix_alone():
+    """Listing prefix 19. (State Dept) -> International, even with domestic agency."""
+    txn = pd.DataFrame([
+        {"transaction_id": "t1", "award_id_unique": "a1", "action_date": "2024-05-01",
+         "award_type_code": "04", "action_type": "A",
+         "awarding_agency_name": "Department of Defense",
+         "awarding_sub_agency_name": "U.S. Army",
+         "assistance_listing_number": "19.518",
+         "recipient_uei": "U1", "recipient_name": "Some Org",
+         "recipient_state_code": "CT", "primary_place_of_performance_country_code": "USA",
+         "federal_action_obligation": 100_000},
+    ])
+    _, stats = classify(txn)
+    assert stats.rows_international == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Hospital exclusion vetoes (multiple patterns + case insensitivity)
+# ---------------------------------------------------------------------------
+
+def test_hospital_exclusion_vetoes_multiple_patterns():
+    """Foundation/Association/Auxiliary suffixes must veto a hospital match."""
+    cases = [
+        ("Mercy Hospital", True),
+        ("MERCY HOSPITAL", True),  # case insensitivity
+        ("mercy hospital", True),
+        ("Mercy Hospital Foundation", False),  # foundation veto
+        ("Hospital Foundation of New York", False),  # foundation veto
+        ("HOSPITAL ASSOCIATION OF AMERICA", False),  # association veto
+        ("New York Hospital Auxiliary", False),  # auxiliary veto
+        ("Childrens Hospital", True),
+        ("Children's Hospital", True),  # apostrophe variant
+    ]
+    rows = []
+    for i, (name, _expected_hospital) in enumerate(cases):
+        rows.append({
+            "transaction_id": f"t{i}", "award_id_unique": f"a{i}",
+            "action_date": "2024-05-01", "award_type_code": "04",
+            "action_type": "A", "awarding_agency_name": "HHS",
+            "awarding_sub_agency_name": "CDC", "assistance_listing_number": "93.000",
+            "recipient_uei": f"U{i}", "recipient_name": name,
+            "recipient_state_code": "NY", "primary_place_of_performance_country_code": "USA",
+            "federal_action_obligation": 100_000,
+        })
+    classified, _ = classify(pd.DataFrame(rows))
+    for i, (name, expected) in enumerate(cases):
+        actual = classified.iloc[i]["recipient_category"] == "hospital"
+        assert actual == expected, (
+            f"Hospital flag for {name!r}: expected hospital={expected}, got hospital={actual}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Reconciliation graceful degradation
+# ---------------------------------------------------------------------------
+
+def test_reconciliation_handles_missing_bmf_outputs(tmp_path, monkeypatch):
+    """When the BMF-backed analytic table doesn't exist, the reconciliation
+    exhibit produces a placeholder CSV with a clear note instead of crashing."""
+    from src.lightweight import reconcile
+    from src import config as cfg
+
+    # Point processed/ at a temp dir with only the lightweight parquet present.
+    monkeypatch.setattr(cfg, "PROCESSED", tmp_path / "processed")
+    monkeypatch.setattr(reconcile.config, "PROCESSED", tmp_path / "processed")
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "exhibits").mkdir()
+
+    # Minimal lightweight parquet so the function gets past the first guard.
+    lightweight = pd.DataFrame([
+        {"fy": 2024, "transaction_id": "t1", "recipient_uei": "U1",
+         "recipient_category": "core",
+         "federal_action_obligation": 100.0,
+         "federal_action_obligation_real": 105.0},
+    ])
+    lightweight.to_parquet(tmp_path / "processed" / "assistance_txn_501c3_lightweight.parquet",
+                           index=False)
+    # No BMF parquet in this directory.
+
+    out = reconcile.produce(out_dir=tmp_path / "exhibits")
+    assert out.exists()
+    df = pd.read_csv(out)
+    assert "note" in df.columns or len(df) > 0  # placeholder note or actual data
