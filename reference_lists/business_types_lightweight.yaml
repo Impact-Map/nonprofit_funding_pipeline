@@ -1,0 +1,64 @@
+# Phase 1 lightweight 501(c)(3) identification rule (methodology Section 3.2 v2).
+#
+# A USASpending recipient is in scope iff:
+#   - business_types_code includes 'M' (Nonprofit with 501C3 IRS Status), AND
+#   - business_types_code does NOT include any code in `excluded_codes`
+#     (hard exclusions). Codes in `soft_codes` are tolerated.
+#
+# Three categories of co-tag below:
+#   - excluded_codes  : hard exclusions; presence disqualifies the recipient.
+#   - soft_codes      : informational tags that may co-occur with M without
+#                       disqualifying (currently just X = "Other"; see v2
+#                       note below for the empirical reasoning).
+#   - permitted_cotags: documentation-only; codes E (Regional Organization)
+#                       and K (Indian/Native American Tribally Designated
+#                       Organization) co-occur freely with M and the rule
+#                       does not reference this list - it is here to make
+#                       the rule's boundaries readable.
+version: "2026-05-06.v2"
+# v2: split exclusion list into hard exclusions (codes that contradict 501(c)(3)
+# status) and soft codes (informational tags that don't contradict M).
+# Code X = "Other" is moved to soft: it doesn't say "this is NOT a 501(c)(3)",
+# only "this is M plus something we won't specify". Real example caught
+# during testing: ALIVIO MEDICAL CENTER, CHRISTUS SANTA ROSA HEALTH CARE,
+# EMMA PENDLETON BRADLEY HOSPITAL all had M+X tags from agencies hedging
+# and were correctly identified 501(c)(3) hospitals that the v1 strict rule
+# excluded. ~3,663 such recipients in FY24 alone.
+
+required_code: "M"
+
+# Hard exclusions: presence of any of these in the recipient's union-of-tags
+# disqualifies the recipient regardless of M presence.
+excluded_codes:
+  A: "State Government"
+  B: "County Government"
+  C: "City or Township Government"
+  D: "Special District Government"
+  F: "U.S. Territory or Possession"
+  G: "Independent School District"
+  H: "Public/State Controlled Institution of Higher Education"
+  I: "Indian/Native American Tribal Government (Federally Recognized)"
+  J: "Indian/Native American Tribal Government (Other)"
+  L: "Public/Indian Housing Authority"
+  N: "Nonprofit without 501C3 IRS Status (Other than IHE)"
+  O: "Private Institution of Higher Education"
+  P: "Individual"
+  Q: "For-Profit Organization (Other than Small Business)"
+  R: "Small Business"
+  S: "Hispanic-serving Institution"
+  T: "Historically Black College or University (HBCU)"
+  U: "Tribally Controlled College or University (TCCU)"
+  V: "Alaska Native and Native Hawaiian Serving Institutions"
+  W: "Non-domestic (non-U.S.) Entity"
+
+# Soft codes: tolerated when co-occurring with M. They are recorded on the
+# recipient (visible in business_types_set) but do not disqualify.
+soft_codes:
+  X: "Other (informational; not a contradiction with M)"
+
+# Codes that co-occur with M without disqualifying. Not used by the rule
+# directly (the absence-of-exclusion check is sufficient); listed here for
+# documentation and QA reporting.
+permitted_cotags:
+  E: "Regional Organization"
+  K: "Indian/Native American Tribally Designated Organization"

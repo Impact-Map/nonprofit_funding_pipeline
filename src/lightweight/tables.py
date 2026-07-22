@@ -1,50 +1,25 @@
-"""Analytic-table assembly (methodology Step 6).
+"""Phase 1 lightweight analytic-table assembly.
 
-Combines the parquet outputs from earlier steps into the two persistent
-analytic tables described in Section 11:
-
-  - assistance_txn_501c3: one row per modification, restricted to 501(c)(3)
-    recipients (match_tier in 1..4), classified into a panel, with the audit
-    trail and the columns required by every downstream exhibit.
-
-  - assistance_awards_501c3: one row per prime award, with first_action_date
-    and cumulative outlay.
-
-Real-dollar adjustments use a CPI-U deflator table (default) or the GDP
-price deflator (sensitivity), both pinned to FY 2025.
+Mirrors src/analytic/tables.py but adapted for the lightweight schema:
+  - No bmf_ntee_primary, no bmf_foundation, no irs_ein.
+  - business_types_set replaces NTEE-derived recipient typing.
+  - in_scope filter is `match_tier` style on the recipient_filter table.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from .. import config
+from ..analytic.tables import (
+    CPI_U_FY, GDP_DEFLATOR_FY, _fy_from_action_date, _real_dollars,
+)
 from ..match.normalize import normalize_uei
 
 LOG = logging.getLogger(__name__)
-
-
-# Annual-average CPI-U (CUUR0000SA0). Update on each run from BLS.
-# Values are FY-average (Oct prior year - Sep FY year). Indices below are
-# defensible defaults until the run pulls fresh BLS data.
-CPI_U_FY: dict[int, float] = {
-    2022: 287.504,   # FY22 average
-    2023: 301.836,   # FY23 average
-    2024: 313.689,   # FY24 average
-    2025: 322.420,   # FY25 average (preliminary)
-}
-
-GDP_DEFLATOR_FY: dict[int, float] = {
-    2022: 117.612,
-    2023: 122.273,
-    2024: 125.482,
-    2025: 128.367,
-}
 
 
 @dataclass
@@ -53,48 +28,35 @@ class AnalyticTablePaths:
     awards: Path
 
 
-def _fy_from_action_date(s: pd.Series) -> pd.Series:
-    d = pd.to_datetime(s, errors="coerce")
-    fy = (d.dt.year + (d.dt.month >= 10).astype(int)).astype("Int64")
-    return fy
-
-
-def _real_dollars(nominal: pd.Series, fy: pd.Series, deflator: dict[int, float], base_fy: int) -> pd.Series:
-    base = deflator[base_fy]
-    factor = fy.map(lambda y: base / deflator.get(int(y), float("nan")) if pd.notna(y) else float("nan"))
-    return nominal * factor.astype(float)
-
-
 def build_transactions_table(transactions_classified: pd.DataFrame,
-                             match_table: pd.DataFrame,
+                             recipient_filter: pd.DataFrame,
                              deflator: str = "CPI-U",
                              base_fy: int = 2025) -> pd.DataFrame:
-    """Project the classified transactions to the schema in Section 11."""
+    """Project the lightweight classified transactions to the methodology
+    Section 11 (lightweight) schema."""
     df = transactions_classified.copy()
-
     if "fy" not in df.columns:
         df["fy"] = _fy_from_action_date(df["action_date"])
 
-    # Normalize keys
     df["recipient_uei"] = df["recipient_uei"].map(normalize_uei)
 
-    # Restrict to recipients that resolved as 501(c)(3) (tiers 1-4).
-    in_scope = df["match_tier"].notna() & (df["match_tier"] < 5)
-    LOG.info("Transactions in 501(c)(3) scope: %d / %d", int(in_scope.sum()), len(df))
+    # Filter to in-scope recipients only.
+    rf = recipient_filter[["recipient_uei", "in_scope", "bt_set"]].copy()
+    rf["recipient_uei"] = rf["recipient_uei"].map(normalize_uei)
+    df = df.merge(rf, on="recipient_uei", how="left")
+    in_scope = df["in_scope"].fillna(False)
+    LOG.info("Transactions in lightweight 501(c)(3) scope: %d / %d",
+             int(in_scope.sum()), len(df))
     df = df.loc[in_scope].copy()
 
-    # Coerce numerics.
     df["federal_action_obligation"] = pd.to_numeric(
         df.get("federal_action_obligation", 0), errors="coerce"
     ).fillna(0.0)
-
-    # Real-dollar series.
     deflator_table = CPI_U_FY if deflator.upper() == "CPI-U" else GDP_DEFLATOR_FY
     df["federal_action_obligation_real"] = _real_dollars(
         df["federal_action_obligation"], df["fy"], deflator_table, base_fy
     )
 
-    # Columns from Section 11.
     column_specs: list[tuple[str, str | None]] = [
         # Identity / dates
         ("fy", None),
@@ -107,13 +69,10 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
         ("awarding_agency_name", "awarding_agency"),
         ("awarding_sub_agency_name", "awarding_subagency"),
         ("assistance_listing_number", None),
-        # Recipient identity & match
+        # Recipient identity
         ("recipient_uei", None),
         ("recipient_name", None),
-        ("irs_ein", "recipient_ein"),
-        ("match_tier", None),
-        ("bmf_foundation", None),
-        ("bmf_ntee", "bmf_ntee_primary"),
+        ("bt_set", "business_types_set"),
         # Recipient geography (for mapping)
         ("recipient_country_code", "recipient_country"),
         ("recipient_country_name", None),
@@ -128,7 +87,7 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
         ("recipient_category", None),
         ("recipient_subcategory", None),
         ("classification_rule_hits", None),
-        # Place of performance geography
+        # Place of performance geography (for International maps + state cuts)
         ("primary_place_of_performance_country_code", "place_of_performance_country"),
         ("primary_place_of_performance_country_name", "place_of_performance_country_name"),
         ("primary_place_of_performance_state_name", "place_of_performance_state_name"),
@@ -138,10 +97,6 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
         ("primary_place_of_performance_city_name", "place_of_performance_city"),
         ("primary_place_of_performance_zip_4", "place_of_performance_zip"),
         ("prime_award_transaction_place_of_performance_cd_current", "place_of_performance_cd"),
-        # External-list match flags
-        ("ipeds_match", None),
-        ("aha_match", None),
-        ("hrsa_uds_match", None),
         # Money
         ("federal_action_obligation", None),
         ("federal_action_obligation_real", None),
@@ -154,40 +109,34 @@ def build_transactions_table(transactions_classified: pd.DataFrame,
         elif (dest or src) not in out.columns:
             out[dest or src] = pd.Series([pd.NA] * len(df), index=df.index)
 
-    # Constants
-    out["bmf_subsection"] = "03"
-
-    # Snapshot fields are filled in by the orchestrator from the manifest;
-    # leave placeholders here so the schema is complete.
     if "snapshot_date" not in out.columns:
         out["snapshot_date"] = pd.NaT
-    if "bmf_release_date" not in out.columns:
-        out["bmf_release_date"] = pd.NaT
     if "classification_rules_version" not in out.columns:
         out["classification_rules_version"] = ""
-
-    # Recipient state fallback
-    if "recipient_state" in out.columns and out["recipient_state"].isna().all():
-        if "recipient_state_name" in df.columns:
-            out["recipient_state"] = df["recipient_state_name"]
 
     return out
 
 
-def build_awards_table(transactions_classified: pd.DataFrame) -> pd.DataFrame:
-    """Award-level table: first_action_date and cumulative outlay per Section 6/Step 6.
+FY22_START = pd.Timestamp("2021-10-01")
 
-    Filters to in-scope recipients (match_tier 1-4) before aggregating, mirroring
-    build_transactions_table. Without this filter the awards table reflects the
-    entire FY22-FY25 award population (~21M rows, $16T+ in outlays) rather than
-    just 501(c)(3) recipients - producing wildly inflated outlay totals in
-    Exhibit 2 and the QA reports.
+
+def build_awards_table(transactions_classified: pd.DataFrame,
+                       recipient_filter: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Award-level table with first_action_date and cumulative outlay.
+
+    Filters to in-scope recipients (M-with-exclusions per the recipient_filter
+    table) before aggregating, mirroring build_transactions_table. Without
+    this filter the awards table reflects the entire FY22-FY25 award
+    population rather than just lightweight-501(c)(3) recipients - producing
+    wildly inflated outlay totals in Exhibit 2.
     """
     df = transactions_classified.copy()
-    if "match_tier" in df.columns:
-        in_scope = df["match_tier"].notna() & (df["match_tier"] < 5)
-        LOG.info("Awards: %d / %d transactions in 501(c)(3) scope", int(in_scope.sum()), len(df))
-        df = df.loc[in_scope].copy()
+    if recipient_filter is not None:
+        rf = recipient_filter[recipient_filter["in_scope"]]
+        in_scope_uei = set(rf["recipient_uei"].map(normalize_uei))
+        df["recipient_uei"] = df["recipient_uei"].map(normalize_uei)
+        df = df[df["recipient_uei"].isin(in_scope_uei)].copy()
+        LOG.info("Awards (lightweight): %d transactions in M-with-exclusions scope", len(df))
     if "award_id_unique" not in df.columns:
         df["award_id_unique"] = df.get("generated_unique_award_id", df.index.astype(str))
 
@@ -212,7 +161,6 @@ def build_awards_table(transactions_classified: pd.DataFrame) -> pd.DataFrame:
         "award_type_code": ("award_type_code", "first"),
         "recipient_category": ("recipient_category", "first"),
         "recipient_subcategory": ("recipient_subcategory", "first"),
-        "match_tier": ("match_tier", "min"),  # best tier on the award
         "sum_obligation": ("federal_action_obligation", "sum"),
     }
     if "period_of_performance_start_date" in df.columns:
@@ -221,25 +169,25 @@ def build_awards_table(transactions_classified: pd.DataFrame) -> pd.DataFrame:
     grp = df.groupby("award_id_unique", dropna=False)
     awards = grp.agg(**agg_spec).reset_index()
     awards["vintage_fy"] = _fy_from_action_date(awards["first_action_date"])
-    # Pre-FY22 flag: True when the award's stated period of performance start
+
+    # Pre-FY22 flag: True if the award's stated period of performance start
     # is before Oct 1, 2021. Such awards likely have obligation history
     # outside our FY22-FY25 window, so cumulative_outlay can legitimately
     # exceed sum_obligation.
-    fy22_start = pd.Timestamp("2021-10-01")
     if "earliest_pop_start" in awards.columns:
         awards["pre_fy22_award"] = (awards["earliest_pop_start"].notna()
-                                    & (awards["earliest_pop_start"] < fy22_start))
+                                    & (awards["earliest_pop_start"] < FY22_START))
     else:
         awards["pre_fy22_award"] = False
 
     if "total_outlayed_amount_for_overall_award" in df.columns:
         outlay = (
             df.dropna(subset=["total_outlayed_amount_for_overall_award"])
-              .assign(_outlay=lambda d: pd.to_numeric(
-                  d["total_outlayed_amount_for_overall_award"], errors="coerce"
-              ))
-              .groupby("award_id_unique")["_outlay"].max()
-              .rename("cumulative_outlay")
+            .assign(_outlay=lambda d: pd.to_numeric(
+                d["total_outlayed_amount_for_overall_award"], errors="coerce"
+            ))
+            .groupby("award_id_unique")["_outlay"].max()
+            .rename("cumulative_outlay")
         )
         awards = awards.merge(outlay, on="award_id_unique", how="left")
     else:
@@ -252,8 +200,14 @@ def write_outputs(transactions: pd.DataFrame, awards: pd.DataFrame,
                   out_dir: Path | None = None) -> AnalyticTablePaths:
     out_dir = out_dir or config.PROCESSED
     out_dir.mkdir(parents=True, exist_ok=True)
-    txn_path = out_dir / "assistance_txn_501c3.parquet"
-    awd_path = out_dir / "assistance_awards_501c3.parquet"
+    txn_path = out_dir / "assistance_txn_501c3_lightweight.parquet"
+    awd_path = out_dir / "assistance_awards_501c3_lightweight.parquet"
+    # bt_set may have been a frozenset on input; normalize to sorted str.
+    if "business_types_set" in transactions.columns:
+        transactions = transactions.copy()
+        transactions["business_types_set"] = transactions["business_types_set"].apply(
+            lambda s: "".join(sorted(s)) if not isinstance(s, str) and s is not None else s
+        )
     transactions.to_parquet(txn_path, index=False)
     awards.to_parquet(awd_path, index=False)
     return AnalyticTablePaths(transactions=txn_path, awards=awd_path)

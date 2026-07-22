@@ -1,0 +1,46 @@
+# Recipient-name patterns flagging a recipient as Educational in Phase 1
+# (lightweight methodology Section 4.4). Most educational institutions are
+# already removed from the in-scope set by the M-with-exclusions rule (codes
+# H, O, T, U, S, V, G); the patterns below catch nonprofit education orgs
+# that file as M (charter networks, education foundations, research-only
+# nonprofits funded by NSF/NIH/HHS/ED).
+version: "2026-05-06.v1"
+
+# First group: name patterns that flag Educational outright (regardless of
+# awarding agency).
+patterns:
+  - label: "name_charter_school"
+    regex: "\\bcharter school\\b"
+  - label: "name_academy"
+    regex: "\\bacademy\\b"
+  - label: "name_education_foundation"
+    regex: "\\beducation foundation\\b"
+  - label: "name_education_fund"
+    regex: "\\beducation fund\\b"
+  - label: "name_public_school"
+    regex: "\\bpublic school\\b"
+
+# Second group: research-nonprofit patterns ONLY when paired with an NSF /
+# NIH / HHS / Department of Education awarding agency.
+research_patterns:
+  - label: "name_institute_of"
+    regex: "\\binstitute of\\b"
+  - label: "name_research_foundation"
+    regex: "\\bresearch foundation\\b"
+  - label: "name_research_institute"
+    regex: "\\bresearch institute\\b"
+
+research_agency_keywords:
+  - "National Science Foundation"
+  - "National Institutes of Health"
+  - "Department of Health and Human Services"
+  - "Department of Education"
+
+# Exclusions: vetoes that override a positive match.
+exclusions:
+  - label: "excl_culinary_academy"
+    regex: "\\bculinary academy\\b"
+  - label: "excl_military_academy"
+    regex: "\\bmilitary academy\\b"
+  - label: "excl_dance_academy"
+    regex: "\\bdance academy\\b"

@@ -29,6 +29,12 @@ import pandas as pd
 
 from src import config, manifest as manifest_mod
 from src.acquire import award_archive, irs_bmf, manual as manual_acquire, sam, usaspending
+from src.lightweight import (
+    categorize as light_categorize,
+    reconcile as light_reconcile,
+    recipient_filter as light_filter,
+    tables as light_tables,
+)
 from src.aggregate import exhibits as exhibits_mod
 from src.analytic import tables as tables_mod
 from src.classify import categorize
@@ -56,15 +62,37 @@ _MATCH_COLUMNS = (
 )
 
 _CLASSIFY_COLUMNS = (
-    "transaction_id", "award_id_unique", "action_date", "award_type_code",
-    "action_type", "awarding_agency_name", "awarding_sub_agency_name",
+    # Identity & dates
+    "transaction_id", "award_id_unique", "generated_unique_award_id",
+    "action_date", "award_type_code", "action_type",
+    # Awarding
+    "awarding_agency_name", "awarding_sub_agency_name",
     "assistance_listing_number", "assistance_listing_title",
-    "recipient_uei", "recipient_name", "recipient_state_code",
-    "recipient_business_types", "primary_place_of_performance_country_code",
+    "program_activity_name",
+    # Recipient identity & business types
+    "recipient_uei", "recipient_name",
+    "recipient_business_types",
+    # Recipient geography (for mapping & geographic analysis)
+    "recipient_country_code", "recipient_country_name",
+    "recipient_state_code", "recipient_state_name",
+    "recipient_county_name", "prime_award_transaction_recipient_county_fips_code",
+    "recipient_city_name", "recipient_zip_code",
+    "prime_award_transaction_recipient_cd_current",
+    # Place of performance geography
+    "primary_place_of_performance_country_code",
+    "primary_place_of_performance_country_name",
+    "primary_place_of_performance_state_name",
+    "prime_award_transaction_place_of_performance_state_fips_code",
+    "primary_place_of_performance_county_name",
+    "prime_award_transaction_place_of_performance_county_fips_code",
+    "primary_place_of_performance_city_name",
+    "primary_place_of_performance_zip_4",
+    "prime_award_transaction_place_of_performance_cd_current",
+    # Money
     "federal_action_obligation",
     "total_outlayed_amount_for_overall_award",
-    "generated_unique_award_id",
-    "program_activity_name",
+    # Award lifecycle (used to flag awards whose obligation history predates FY22)
+    "period_of_performance_start_date",
 )
 
 
@@ -188,6 +216,87 @@ def step_sam(run_manifest: manifest_mod.RunManifest) -> None:
         run_manifest.sam_extract = asdict(rec)
 
 
+def step_filter_lightweight(run_manifest: manifest_mod.RunManifest) -> None:
+    """Phase 1 lightweight: replaces step_match.
+
+    Applies the M-with-exclusions rule (methodology Section 3.2) at recipient
+    grain. Reads only the columns needed for filtering.
+    """
+    LOG.info("Step 4 (lightweight): build recipient_filter (M-with-exclusions)")
+    cols = (
+        "recipient_uei", "recipient_name", "recipient_state_code",
+        # Archive-rename uses recipient_business_types as the canonical name;
+        # bulk_download originals use business_types_code. Read whichever
+        # exists - _read_transactions silently drops missing names.
+        "recipient_business_types", "business_types_code",
+    )
+    txn = _read_transactions(columns=cols)
+    table, stats = light_filter.build_recipient_filter(txn)
+    light_filter.write_outputs(table, stats)
+    run_manifest.match_stats = {
+        "lightweight_filter": stats.__dict__,
+    }
+    if "exclusion_reasons" in run_manifest.match_stats["lightweight_filter"]:
+        run_manifest.match_stats["lightweight_filter"]["exclusion_reasons"] = dict(
+            stats.exclusion_reasons
+        )
+
+
+def step_classify_lightweight(run_cfg: config.RunConfig,
+                              run_manifest: manifest_mod.RunManifest) -> None:
+    LOG.info("Step 5 (lightweight): heuristic panel classification")
+    txn = _read_transactions(columns=_CLASSIFY_COLUMNS)
+    classified, stats = light_categorize.classify(
+        txn, priority=run_cfg.classification_priority,
+    )
+    classified.to_parquet(
+        config.PROCESSED / "transactions_classified_lightweight.parquet", index=False,
+    )
+    run_manifest.category_stats = stats.__dict__
+
+
+def step_tables_lightweight(run_cfg: config.RunConfig,
+                            run_manifest: manifest_mod.RunManifest) -> None:
+    LOG.info("Step 6 (lightweight): analytic table assembly")
+    classified = pd.read_parquet(
+        config.PROCESSED / "transactions_classified_lightweight.parquet"
+    )
+    rfilter = pd.read_parquet(config.PROCESSED / "recipient_filter_lightweight.parquet")
+    txn_table = light_tables.build_transactions_table(
+        classified, rfilter,
+        deflator=run_cfg.deflator, base_fy=run_cfg.deflator_base_fy,
+    )
+    awards_table = light_tables.build_awards_table(classified, recipient_filter=rfilter)
+    paths = light_tables.write_outputs(txn_table, awards_table)
+    manifest_mod.add_output(run_manifest, paths.transactions, "assistance_txn_501c3_lightweight")
+    manifest_mod.add_output(run_manifest, paths.awards, "assistance_awards_501c3_lightweight")
+
+
+def step_exhibits_lightweight(run_manifest: manifest_mod.RunManifest) -> None:
+    LOG.info("Step 7 (lightweight): aggregations and exhibits")
+    txn = pd.read_parquet(config.PROCESSED / "assistance_txn_501c3_lightweight.parquet")
+    awd = pd.read_parquet(config.PROCESSED / "assistance_awards_501c3_lightweight.parquet")
+    out_dir = config.EXHIBITS / "lightweight"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = exhibits_mod.produce_all(txn, awd, out_dir=out_dir)
+    for art in artifacts:
+        manifest_mod.add_output(run_manifest, art.path,
+                                f"lightweight/{art.name}/{art.panel or 'Total'}")
+    # Reconciliation exhibit (Section 13).
+    recon = light_reconcile.produce(out_dir=out_dir)
+    manifest_mod.add_output(run_manifest, recon, "lightweight/exhibit_15_reconciliation")
+
+
+def step_qa_lightweight(run_manifest: manifest_mod.RunManifest) -> None:
+    LOG.info("Step 8 (lightweight): QA checks")
+    txn = pd.read_parquet(config.PROCESSED / "assistance_txn_501c3_lightweight.parquet")
+    awd = pd.read_parquet(config.PROCESSED / "assistance_awards_501c3_lightweight.parquet")
+    # Re-use the full QA module; match table stand-in is the recipient_filter.
+    rfilter = pd.read_parquet(config.PROCESSED / "recipient_filter_lightweight.parquet")
+    rfilter = rfilter.assign(match_tier=rfilter["in_scope"].map({True: 1, False: 5}))
+    qa_checks.run(txn, awd, rfilter, out_dir=config.EXHIBITS / "lightweight" / "qa")
+
+
 def step_match(run_manifest: manifest_mod.RunManifest) -> None:
     LOG.info("Step 4: build recipient_match")
     txn = _read_transactions(columns=_MATCH_COLUMNS)
@@ -287,6 +396,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--deflator", default=config.DEFAULT_DEFLATOR, choices=["CPI-U", "GDP"])
     p.add_argument("--download-workers", type=int, default=None,
                    help="Parallel download workers. bulk_download default: one per FY (4). archive default: 16.")
+    p.add_argument("--lightweight", action="store_true",
+                   help="Phase 1 lightweight pipeline: USAspending business_types_code 'M' "
+                        "rule (no IRS BMF, no SAM). See "
+                        "Methodology_FederalAssistance_501c3_Lightweight_FY22-FY25.docx.")
     p.add_argument("--acquire-source", choices=["bulk_download", "archive", "manual"],
                    default="archive",
                    help="Where to pull USASpending data from. 'archive' is the pre-generated per-agency zip set "
@@ -333,20 +446,35 @@ def main(argv: list[str] | None = None) -> int:
             step_acquire(run_cfg, rm,
                          download_workers=args.download_workers,
                          source=args.acquire_source)
-        if do_bmf:
-            step_bmf(rm)
-        if do_sam:
-            step_sam(rm)
-        if do_match:
-            step_match(rm)
-        if do_classify:
-            step_classify(run_cfg, rm)
-        if do_tables:
-            step_tables(run_cfg, rm)
-        if do_exhibits:
-            step_exhibits(rm)
-        if do_qa:
-            step_qa(rm)
+        if args.lightweight:
+            # Phase 1: USAspending-only path. Skip BMF/SAM steps entirely.
+            if do_bmf or do_sam:
+                LOG.info("Lightweight mode: --bmf and --sam are no-ops (skipped)")
+            if do_match:
+                step_filter_lightweight(rm)
+            if do_classify:
+                step_classify_lightweight(run_cfg, rm)
+            if do_tables:
+                step_tables_lightweight(run_cfg, rm)
+            if do_exhibits:
+                step_exhibits_lightweight(rm)
+            if do_qa:
+                step_qa_lightweight(rm)
+        else:
+            if do_bmf:
+                step_bmf(rm)
+            if do_sam:
+                step_sam(rm)
+            if do_match:
+                step_match(rm)
+            if do_classify:
+                step_classify(run_cfg, rm)
+            if do_tables:
+                step_tables(run_cfg, rm)
+            if do_exhibits:
+                step_exhibits(rm)
+            if do_qa:
+                step_qa(rm)
     finally:
         manifest_path = manifest_mod.write(rm)
         LOG.info("Run manifest -> %s", manifest_path)

@@ -31,6 +31,11 @@ class ReferenceLists:
     covid_programs: dict[str, Any]
     ntee_categories: dict[str, Any]
     business_types: dict[str, Any]
+    # Phase 1 lightweight methodology
+    business_types_lightweight: dict[str, Any]
+    hospital_name_patterns: dict[str, Any]
+    hospital_listings: dict[str, Any]
+    educational_name_patterns: dict[str, Any]
     rules_version_hash: str
 
 
@@ -42,6 +47,10 @@ REFERENCE_FILES = (
     "covid_programs.yaml",
     "ntee_categories.yaml",
     "business_types.yaml",
+    "business_types_lightweight.yaml",
+    "hospital_name_patterns.yaml",
+    "hospital_listings.yaml",
+    "educational_name_patterns.yaml",
 )
 
 
@@ -71,5 +80,9 @@ def load_reference_lists() -> ReferenceLists:
         covid_programs=docs["covid_programs"],
         ntee_categories=docs["ntee_categories"],
         business_types=docs["business_types"],
+        business_types_lightweight=docs["business_types_lightweight"],
+        hospital_name_patterns=docs["hospital_name_patterns"],
+        hospital_listings=docs["hospital_listings"],
+        educational_name_patterns=docs["educational_name_patterns"],
         rules_version_hash=_hash_files(paths),
     )

@@ -82,6 +82,82 @@ Switch deflator:
 python pipeline.py --tables --deflator GDP
 ```
 
+## Phase 1 lightweight mode
+
+The pipeline supports two methodologies:
+
+- **Full (default)** — IRS BMF cross-reference, 5-tier match, NTEE/IPEDS/AHA/HRSA-driven
+  carve-outs. See `Methodology_FederalAssistance_501c3_FY22-FY25.docx`.
+- **Phase 1 lightweight** — USAspending data only. Recipient identification
+  via the `business_types_code='M'` rule with mutually-exclusive co-tag
+  exclusions. Heuristic name-based carve-outs for Educational and Hospital.
+  See `Methodology_FederalAssistance_501c3_Lightweight_FY22-FY25.docx`.
+
+To run Phase 1 lightweight end-to-end:
+
+```
+python3 pipeline.py --lightweight --all
+```
+
+Or stage by stage:
+
+```
+python3 pipeline.py --lightweight --acquire    # same data acquisition path
+python3 pipeline.py --lightweight --match      # M-with-exclusions filter (no BMF)
+python3 pipeline.py --lightweight --classify   # heuristic panel carve-outs
+python3 pipeline.py --lightweight --tables
+python3 pipeline.py --lightweight --exhibits   # writes under exhibits/lightweight/
+python3 pipeline.py --lightweight --qa
+```
+
+Lightweight outputs go under `exhibits/lightweight/` so they don't collide
+with the full-pipeline outputs. Both can coexist in the same project tree;
+when both have run, the lightweight pipeline produces a reconciliation
+exhibit (`exhibit_15_reconciliation_*.csv`) comparing Topline numbers
+side-by-side.
+
+Lightweight wall time on FY22–FY25: ~15–30 min (no Tier 3 fuzzy match).
+
+### Client QA workbooks
+
+The pipeline outputs (parquet, JSON manifests, CSV with raw column names)
+are appropriate for code-driven analysis but not for handing to a non-technical
+client for spot-check QA. The
+[`scripts/build_qa_workbooks.py`](scripts/build_qa_workbooks.py) script reads
+the pipeline outputs and produces two formatted Excel workbooks. Both
+pipeline sources are supported:
+
+```
+# Lightweight (USAspending-tag rule) — first-pass client deliverable
+python3 scripts/build_qa_workbooks.py --source lightweight
+
+# IRS BMF Verified — more robust follow-up deliverable
+python3 scripts/build_qa_workbooks.py --source bmf
+```
+
+Outputs land under:
+- `exhibits/lightweight/qa_for_client/` for `--source lightweight`
+- `exhibits/qa_for_client/` for `--source bmf`
+
+Both workbook pairs share the same structure:
+
+- `Headline_Summary.xlsx` — cover page, per-FY summary, panel × FY grid,
+  outlays by vintage FY, top 25 agencies and top 25 CFDA programs per panel,
+  top 50 recipients per panel (the headline QA artifact, with USAspending
+  search URLs and a Reviewer Notes column, plus Total Cumulative Outlays and
+  Has Pre-FY22 Award History columns), geographic breakouts (state, POP
+  state, top 100 counties), YoY change, plain-English caveats, glossary.
+  The BMF workbook adds a **Reconciliation** sheet showing what IRS BMF
+  verification captures beyond the USAspending-tag view.
+- `Recipient_Lookup.xlsx` — searchable list of all in-scope recipients
+  with FY-by-FY obligations and geography. Lightweight shows a "Business
+  Types Tagged" column; BMF shows "Match Tier" (Tier 1–4) and "IRS BMF
+  NTEE" columns instead. Top 200 Excluded sheet lists the largest
+  out-of-scope recipients with plain-English exclusion reasons.
+
+Re-run the script after any methodology change; the workbooks regenerate
+from the latest analytic parquet outputs in seconds.
+
 ## Acquisition sources
 
 The pipeline can pull USASpending data three ways. Pick one with `--acquire-source`:
@@ -137,6 +213,34 @@ classification:
 - `reference_lists/manual_match_overrides.yaml` - Tier 4 manual UEI->EIN overrides
 - `reference_lists/spending_explorer_ref.yaml` - reconciliation totals from
   the public USAspending Spending Explorer dashboard
+
+## Geographic fields (mapping support)
+
+Both pipelines' analytic transactions tables carry detailed geographic
+attributes for the recipient and the place of performance, suitable for
+state-level choropleths, county-level analysis (FIPS codes provided for
+clean Census shapefile joins), congressional-district analysis, city /
+ZIP point density, and country-level world maps for the International
+panel.
+
+Recipient geography:
+- `recipient_country` / `recipient_country_name`
+- `recipient_state` / `recipient_state_name`
+- `recipient_county_name` / `recipient_county_fips`
+- `recipient_city` / `recipient_zip`
+- `recipient_cd` (congressional district, current redistricting cycle)
+
+Place-of-performance geography:
+- `place_of_performance_country` / `place_of_performance_country_name`
+- `place_of_performance_state_name` / `place_of_performance_state_fips`
+- `place_of_performance_county_name` / `place_of_performance_county_fips`
+- `place_of_performance_city` / `place_of_performance_zip`
+- `place_of_performance_cd`
+
+The QA workbook's `Headline_Summary.xlsx` includes "By Recipient State",
+"By POP State (domestic)", and "Top 100 Recipient Counties" sheets;
+`Recipient_Lookup.xlsx` includes city, county, ZIP, and congressional
+district per recipient.
 
 ## Reproducibility
 
