@@ -102,30 +102,76 @@ def _intl_subcategory(row: pd.Series, rules: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _safe_upper(v) -> str:
+    """Coerce a possibly-NaN / possibly-None cell to an uppercase string.
+    row.get(col) can return NaN (float) when the column exists but the cell
+    is null; `NaN or ""` returns NaN, not "", so the naive `.upper()` fails."""
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        # NaN check without importing math
+        if v != v:
+            return ""
+    s = str(v).strip()
+    return s.upper() if s.lower() != "nan" else ""
+
+
 def _educational_subcategory(row: pd.Series) -> str:
-    ntee = (row.get("bmf_ntee") or "").upper()
-    biz_codes = str(row.get("recipient_business_types") or "").upper()
-    # Higher ed first by NTEE B40-B59
+    """Sub-cut labels within the Educational panel.
+
+    NTEE B-series canonical assignments (from the NCCS classification manual):
+      B20-B29  elementary & secondary (K-12)
+      B30-B39  vocational / technical
+      B40      Higher Education (general / unspecified 4-year)
+      B41      Community / Junior College (2-year)
+      B42      Undergraduate College (4-year)
+      B43      University / Technological Institute (4-year, doctoral)
+      B44-B49  Higher-ed variants (rare; treat as 4-year)
+      B50-B59  Graduate & Professional Schools (4-year+)
+      B60-B99  Adult ed, libraries, student services, education NEC
+
+    Public vs private for 4-year is decided by business_types code (H = state
+    IHE, O = private IHE) if present; otherwise falls back to a name heuristic.
+    """
+    ntee = _safe_upper(row.get("bmf_ntee"))
+    biz_codes = _safe_upper(row.get("recipient_business_types"))
+    is_public = "06" in biz_codes or "H" in biz_codes
+    is_private = "11" in biz_codes or "O" in biz_codes
+
     if ntee:
-        if "B40" <= ntee <= "B49":
-            return "public_2yr" if "STATE" in (row.get("bmf_name") or "").upper() else "private_2yr"
-        if "B50" <= ntee <= "B59":
-            return "public_4yr" if "06" in biz_codes else (
-                "private_4yr" if "11" in biz_codes else "higher_ed_4yr"
-            )
+        # 2-year colleges (B41 only) — B40 and B42+ are 4-year.
+        if ntee == "B41":
+            return "public_2yr" if is_public else "private_2yr"
+        # 4-year colleges and universities
+        if ntee == "B40" or ("B42" <= ntee <= "B59"):
+            if is_public:
+                return "public_4yr"
+            if is_private:
+                return "private_4yr"
+            return "higher_ed_4yr"
         if "B20" <= ntee <= "B29":
             return "k12"
         if "B30" <= ntee <= "B39":
             return "vocational"
         if "B60" <= ntee <= "B99":
             return "other_education"
-    # Business-types fallback
-    if "06" in biz_codes:
+
+    # Business-types fallback (used when NTEE is missing, which is common for
+    # large universities per NCCS coverage gaps).
+    if is_public:
         return "public_4yr"
-    if "11" in biz_codes:
+    if is_private:
         return "private_4yr"
-    if "12" in biz_codes:
+    if "12" in biz_codes or "G" in biz_codes:
         return "k12"
+    if "T" in biz_codes:
+        return "hbcu"
+    if "U" in biz_codes:
+        return "tccu"
+    if "S" in biz_codes:
+        return "hispanic_serving"
+    if "V" in biz_codes:
+        return "alaska_native_hawaiian_serving"
     return "other_education"
 
 
@@ -135,7 +181,7 @@ def _educational_subcategory(row: pd.Series) -> str:
 
 
 def _hospital_subcategory(row: pd.Series) -> str:
-    ntee = (row.get("bmf_ntee") or "").upper()
+    ntee = _safe_upper(row.get("bmf_ntee"))
     if ntee:
         if "E20" <= ntee <= "E22":
             return "general_hospital"
@@ -241,19 +287,35 @@ def classify(transactions: pd.DataFrame,
     df["_rule_hosp_aha"] = df["aha_match"]
     df["_rule_hosp_hrsa"] = df["hrsa_uds_match"]
     biz = df.get("recipient_business_types", pd.Series([""] * len(df))).fillna("").astype(str)
+    # business_types_code appears in two encodings depending on acquisition
+    # path: numeric SF-424 codes (bulk_download API) and letter codes
+    # (Award Data Archive Public Profile format). Match both. There is no
+    # dedicated hospital letter code in SF-424; numeric 26 is the only signal.
     df["_rule_hosp_biz"] = biz.str.contains(r"\b26\b", regex=True)
 
-    # Educational rules
+    # Educational rules. business_types signals for education (both encodings):
+    #   Numeric (bulk_download): 06 State IHE, 11 Private IHE, 12 School
+    #                            District, 23 Other Educational
+    #   Letter (Award Archive):  H State/Public IHE, O Private IHE,
+    #                            G Independent School District,
+    #                            T HBCU, U TCCU, S Hispanic-Serving,
+    #                            V Alaska Native / Native Hawaiian-Serving
     df["_rule_edu_ntee_b"] = _ntee_starts_with(df["bmf_ntee"], "B")
     df["_rule_edu_ipeds"] = df["ipeds_match"]
     df["_rule_edu_nces_ccd"] = df["nces_ccd_match"]
-    edu_biz = (
-        biz.str.contains(r"\b06\b", regex=True)
-        | biz.str.contains(r"\b11\b", regex=True)
-        | biz.str.contains(r"\b12\b", regex=True)
-        | biz.str.contains(r"\b23\b", regex=True)
-    )
-    df["_rule_edu_biz"] = edu_biz
+    numeric_edu_pattern = r"\b(?:06|11|12|23)\b"
+    # Letter codes: check that the letter is present as a distinct token in
+    # the concatenated business_types string. Letters can appear either as
+    # single-letter runs ("O", "OMX", "O,M,X") or space/comma-separated.
+    # A word-boundary check on the concatenated string catches the standalone
+    # cases; a set-membership check on the parsed set catches the concatenated
+    # ones like "OMX".
+    letter_edu_codes = ("H", "O", "T", "U", "S", "V", "G")
+    def _has_edu_letter(s):
+        upper = s.upper()
+        return any(c in upper for c in letter_edu_codes)
+    letter_edu_hit = biz.map(_has_edu_letter).fillna(False)
+    df["_rule_edu_biz"] = biz.str.contains(numeric_edu_pattern, regex=True) | letter_edu_hit
 
     # ---------- Compose category from rule columns ----------
     is_intl = (
