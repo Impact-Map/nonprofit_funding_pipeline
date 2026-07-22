@@ -1,26 +1,39 @@
-"""Generate non-technical QA workbooks from the lightweight pipeline outputs.
+"""Generate non-technical QA workbooks from the pipeline outputs.
 
-The lightweight analytic outputs (parquet, CSV with raw column names, JSON
+The pipeline's analytic outputs (parquet, CSV with raw column names, JSON
 manifests) are appropriate for code-driven analysis but not for handing to a
 non-technical client for spot-check QA. This script reads those outputs and
 produces two formatted Excel workbooks designed for human review:
 
   Headline_Summary.xlsx    main QA artifact - panel/FY headlines, top
                            agencies, top listings, top recipients per panel,
-                           shift-share, caveats, glossary
+                           outlays, geographic breakouts, caveats, glossary
   Recipient_Lookup.xlsx    per-recipient lookup table for "is org X in the
                            in-scope set" questions, plus the top excluded
                            recipients with plain-English exclusion reasons
 
 Both workbooks use friendly column names, dollar formatting, percent
-formatting, banded rows, and frozen headers. The output is the file you
-email to a non-technical reviewer alongside the methodology PDF.
+formatting, banded rows, and frozen headers.
 
-Re-run after any methodology change:
+Two pipeline sources are supported:
 
-    python3 scripts/build_qa_workbooks.py
+  --source lightweight   (default) USAspending business_types_code 'M' tag
+                         rule; ~30% of BMF dollar magnitude; ~15-30 min
+                         pipeline runtime; suitable for a first-pass client
+                         review. Outputs go to exhibits/lightweight/qa_for_client/.
 
-Outputs land in exhibits/lightweight/qa_for_client/.
+  --source bmf           IRS BMF verified 501(c)(3) status via 5-tier
+                         recipient match, with NTEE-driven Educational /
+                         Hospital panels. The more robust deliverable;
+                         requires the full pipeline to have run. Outputs go
+                         to exhibits/qa_for_client/. Includes a reconciliation
+                         sheet that shows what BMF captures beyond the
+                         lightweight view.
+
+Re-run after any methodology or data change:
+
+    python3 scripts/build_qa_workbooks.py --source lightweight
+    python3 scripts/build_qa_workbooks.py --source bmf
 """
 from __future__ import annotations
 
@@ -30,6 +43,7 @@ import logging
 import re
 import sys
 import urllib.parse
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -43,6 +57,110 @@ from src import config  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 LOG = logging.getLogger("qa_workbooks")
+
+
+# ---------------------------------------------------------------------------
+# Source config: routes lightweight vs BMF pipeline outputs through the same
+# workbook builder. The two pipelines share the workbook structure but differ
+# in input paths, one or two column names, exclusion-recipient logic, and the
+# language on the Cover / Caveats / Glossary sheets.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SourceConfig:
+    name: str                       # "lightweight" | "bmf"
+    label: str                      # short client-facing label
+    workbook_title: str             # cover-sheet title line
+    methodology_desc: str           # one-line description of recipient identification
+    out_subdir: str                 # relative under exhibits/
+    txn_parquet: Path
+    awards_parquet: Path
+    # For lightweight this is the recipient_filter table; for BMF it's the
+    # recipient_match table. Both carry per-UEI identification metadata.
+    filter_parquet: Path
+    # Column that carries "why is this recipient in / out of scope" metadata
+    # on the recipient-lookup and top-excluded sheets. Value differs per source.
+    membership_column: str
+    membership_label: str           # header shown to the client
+    # Extra caveats specific to this source (appended to the base caveats list)
+    extra_caveats: list[tuple[str, str]] = field(default_factory=list)
+    # True when a reconciliation sheet should be added
+    include_reconciliation: bool = False
+
+
+def lightweight_config() -> SourceConfig:
+    return SourceConfig(
+        name="lightweight",
+        label="Lightweight (USAspending tag)",
+        workbook_title=("Federal Financial Assistance to 501(c)(3) Organizations, FY22-FY25 "
+                        "— USAspending-tag identification"),
+        methodology_desc=("Recipient identification: USAspending's business_types_code 'M' tag, "
+                          "with mutually-exclusive co-tag exclusions."),
+        out_subdir="lightweight/qa_for_client",
+        txn_parquet=config.PROCESSED / "assistance_txn_501c3_lightweight.parquet",
+        awards_parquet=config.PROCESSED / "assistance_awards_501c3_lightweight.parquet",
+        filter_parquet=config.PROCESSED / "recipient_filter_lightweight.parquet",
+        membership_column="business_types_set",
+        membership_label="Business Types Tagged",
+        extra_caveats=[
+            ("Recipient identification depends on a single agency-reported tag",
+             "501(c)(3) status is identified by USAspending's 'M' business-type code. Some "
+             "agencies under-tag, over-tag, or use the 'Other' code (X) alongside M. The methodology "
+             "accepts this as the cost of running without an IRS-side cross-check. A more robust IRS "
+             "BMF-verified analysis is available on request; it captures roughly 3x the dollar volume "
+             "reported here."),
+            ("No point-in-time IRS verification",
+             "If an organization's 501(c)(3) status was revoked during FY22-FY25, the recipient is "
+             "still counted because USAspending continues to report the M tag. We cannot detect "
+             "revocations without IRS data."),
+        ],
+        include_reconciliation=False,
+    )
+
+
+def bmf_config() -> SourceConfig:
+    return SourceConfig(
+        name="bmf",
+        label="IRS BMF Verified",
+        workbook_title=("Federal Financial Assistance to IRS-Verified 501(c)(3) Organizations, "
+                        "FY22-FY25"),
+        methodology_desc=("Recipient identification: cross-referenced against the IRS Exempt "
+                          "Organizations Business Master File (BMF) via a 5-tier match (EIN "
+                          "direct, deterministic name+state, probabilistic name+state, manual, "
+                          "unresolved). Educational and Hospital panels use NTEE codes assigned "
+                          "by NCCS in the BMF."),
+        out_subdir="qa_for_client",
+        txn_parquet=config.PROCESSED / "assistance_txn_501c3.parquet",
+        awards_parquet=config.PROCESSED / "assistance_awards_501c3.parquet",
+        filter_parquet=config.PROCESSED / "recipient_match.parquet",
+        membership_column="match_tier",
+        membership_label="Match Tier",
+        extra_caveats=[
+            ("Match precision varies by tier",
+             "Recipients matched via Tier 1 (direct EIN) are the highest confidence. Tier 2 uses "
+             "exact name+state after normalization; Tier 3 uses probabilistic name+state matching "
+             "(rapidfuzz token_sort_ratio >= 92). The methodology targets 95% precision on Tier 3 "
+             "via manual audit; residual false-positive risk is documented. Tier 4 = manual "
+             "override list. Tier 5 = unmatched (excluded)."),
+            ("NCCS-assigned NTEE codes drive Educational and Hospital panels",
+             "The IRS embeds NCCS-assigned NTEE codes in the BMF distribution. About 15% of "
+             "BMF-matched 501(c)(3) recipients have empty NTEE primary; those default to Topline "
+             "Core unless caught by a transaction-level rule. NTEE codes are static after "
+             "assignment, so an organization that changed its mission since registration may carry "
+             "an outdated code."),
+            ("Recipients without an IRS BMF match are excluded",
+             "About 74% of the distinct USAspending recipients seen in FY22-FY25 do not match the "
+             "IRS BMF. Most are legitimately non-501(c)(3) (state/local governments, individuals, "
+             "for-profit businesses, foreign entities). Some are 501(c)(3)s that failed to match "
+             "for name/EIN reasons; the Top 200 Excluded sheet in Recipient_Lookup.xlsx lists the "
+             "largest by dollar for manual review."),
+        ],
+        include_reconciliation=True,
+    )
+
+
+SOURCES = {"lightweight": lightweight_config, "bmf": bmf_config}
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +213,26 @@ def fmt_business_types(s: str | None) -> str:
     if not s or not isinstance(s, str):
         return ""
     return ", ".join(sorted(s))
+
+
+_MATCH_TIER_LABELS = {
+    1: "Tier 1 (direct EIN)",
+    2: "Tier 2 (deterministic name+state)",
+    3: "Tier 3 (probabilistic name+state)",
+    4: "Tier 4 (manual override)",
+    5: "Tier 5 (unmatched)",
+}
+
+
+def _match_tier_label(tier) -> str:
+    """Turn a numeric match_tier into a plain-English phrase."""
+    if pd.isna(tier):
+        return ""
+    try:
+        t = int(tier)
+    except (TypeError, ValueError):
+        return ""
+    return _MATCH_TIER_LABELS.get(t, str(t))
 
 
 def usaspending_search_url(name: str | None, uei: str | None) -> str:
@@ -490,6 +628,61 @@ def sheet_yoy_change(txn: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
     return pivot.sort_values("Change ($)", key=abs, ascending=False).head(top_n).reset_index(drop=True)
 
 
+def sheet_reconciliation() -> pd.DataFrame:
+    """Build a headline comparison between the BMF-verified analytic table
+    and the lightweight (USAspending-tag) analytic table. Positive Change
+    means the BMF view captures more than the tag-only view. Silently
+    returns empty if either parquet is missing.
+    """
+    bmf_txn = config.PROCESSED / "assistance_txn_501c3.parquet"
+    light_txn = config.PROCESSED / "assistance_txn_501c3_lightweight.parquet"
+    if not bmf_txn.exists() or not light_txn.exists():
+        return pd.DataFrame()
+
+    b = pd.read_parquet(bmf_txn, columns=["fy", "recipient_uei",
+                                          "federal_action_obligation",
+                                          "recipient_category"])
+    l = pd.read_parquet(light_txn, columns=["fy", "recipient_uei",
+                                            "federal_action_obligation",
+                                            "recipient_category"])
+    for df in (b, l):
+        df["federal_action_obligation"] = pd.to_numeric(
+            df["federal_action_obligation"], errors="coerce"
+        ).fillna(0)
+
+    rows: list[tuple[str, float, float]] = []
+    # Total obligations
+    b_tot = b["federal_action_obligation"].sum()
+    l_tot = l["federal_action_obligation"].sum()
+    rows.append(("Total obligations (FY22-FY25)", b_tot, l_tot))
+
+    # Distinct recipients (UEIs)
+    b_ueis = b["recipient_uei"].nunique()
+    l_ueis = l["recipient_uei"].nunique()
+    rows.append(("Distinct recipients (UEIs, FY22-FY25 union)", b_ueis, l_ueis))
+
+    # Per-panel obligations
+    for cat, label in PANELS:
+        b_c = b.loc[b["recipient_category"] == cat, "federal_action_obligation"].sum()
+        l_c = l.loc[l["recipient_category"] == cat, "federal_action_obligation"].sum()
+        rows.append((f"Obligations — {label}", b_c, l_c))
+
+    # Per-panel recipient counts
+    for cat, label in PANELS:
+        b_c = b.loc[b["recipient_category"] == cat, "recipient_uei"].nunique()
+        l_c = l.loc[l["recipient_category"] == cat, "recipient_uei"].nunique()
+        rows.append((f"Recipients — {label}", b_c, l_c))
+
+    out = pd.DataFrame(rows, columns=["Metric", "This View (BMF)", "Tag-Only View"])
+    out["Change ($)"] = out["This View (BMF)"] - out["Tag-Only View"]
+    out["Change (%)"] = out.apply(
+        lambda r: (r["This View (BMF)"] - r["Tag-Only View"]) / r["Tag-Only View"]
+                  if r["Tag-Only View"] else None,
+        axis=1,
+    )
+    return out
+
+
 def sheet_caveats(extra_rows: list[tuple[str, str]] | None = None) -> pd.DataFrame:
     rows = [
         ("Recipient identification depends on a single tag",
@@ -561,8 +754,15 @@ def sheet_glossary() -> pd.DataFrame:
 
 def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series,
                            outlay_by_uei: pd.Series | None = None,
-                           pre_fy22_by_uei: pd.Series | None = None) -> pd.DataFrame:
-    """Per-recipient roll-up across FY22-FY25 with searchable columns."""
+                           pre_fy22_by_uei: pd.Series | None = None,
+                           source: SourceConfig | None = None) -> pd.DataFrame:
+    """Per-recipient roll-up across FY22-FY25 with searchable columns.
+
+    `source` controls which identification metadata column is exposed:
+      lightweight -> Business Types Tagged (from business_types_set)
+      bmf        -> Match Tier (numeric 1-4) rendered as plain-English label,
+                    plus NTEE Primary code
+    """
     if txn.empty:
         return pd.DataFrame()
     fy_pivot = (txn.groupby(["recipient_uei", "fy"])["federal_action_obligation"]
@@ -587,7 +787,16 @@ def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series,
         out[label] = last[col].fillna("") if col in last.columns else ""
     out["Panel"] = last["recipient_category"].map(dict(PANELS))
     out["Panel Sub-cut"] = last["recipient_subcategory"].fillna("")
-    out["Business Types Tagged"] = last["business_types_set"].fillna("").map(fmt_business_types)
+
+    # Source-specific identification metadata.
+    is_bmf = source is not None and source.name == "bmf"
+    if is_bmf and "match_tier" in last.columns:
+        out["Match Tier"] = last["match_tier"].map(_match_tier_label).fillna("")
+        if "bmf_ntee_primary" in last.columns:
+            out["IRS BMF NTEE"] = last["bmf_ntee_primary"].fillna("").astype(str)
+    elif "business_types_set" in last.columns:
+        out["Business Types Tagged"] = last["business_types_set"].fillna("").map(fmt_business_types)
+
     out["FY22 Obligations"] = fy_pivot[2022]
     out["FY23 Obligations"] = fy_pivot[2023]
     out["FY24 Obligations"] = fy_pivot[2024]
@@ -615,9 +824,20 @@ def sheet_recipient_lookup(txn: pd.DataFrame, names_by_uei: pd.Series,
 
 
 def sheet_top_excluded(rfilter: pd.DataFrame, txn_raw: pd.DataFrame,
-                       code_to_label: dict[str, str], top_n: int = 200) -> pd.DataFrame:
-    """Top excluded recipients by associated obligated dollars."""
-    excluded = rfilter[~rfilter["in_scope"]].copy()
+                       code_to_label: dict[str, str], top_n: int = 200,
+                       source: SourceConfig | None = None) -> pd.DataFrame:
+    """Top excluded recipients by associated obligated dollars.
+
+    Lightweight: excluded = M-with-exclusions rule said in_scope=False.
+    BMF:         excluded = match_tier=5 (no BMF match found; the recipient
+                            is either not a 501(c)(3) or failed to match by
+                            name/EIN).
+    """
+    is_bmf = source is not None and source.name == "bmf"
+    if is_bmf:
+        excluded = rfilter[rfilter["match_tier"] >= 5].copy() if "match_tier" in rfilter.columns else pd.DataFrame()
+    else:
+        excluded = rfilter[~rfilter["in_scope"]].copy() if "in_scope" in rfilter.columns else pd.DataFrame()
     if excluded.empty:
         return pd.DataFrame()
     txn_raw["federal_action_obligation"] = pd.to_numeric(
@@ -625,11 +845,25 @@ def sheet_top_excluded(rfilter: pd.DataFrame, txn_raw: pd.DataFrame,
     ).fillna(0)
     obl = txn_raw.groupby("recipient_uei", as_index=False)["federal_action_obligation"].sum()
     excluded = excluded.merge(obl, on="recipient_uei", how="left").fillna({"federal_action_obligation": 0})
-    excluded["Why Excluded"] = excluded["exclusion_reason"].map(
-        lambda r: translate_exclusion_reason(r, code_to_label)
-    )
+
+    if is_bmf:
+        # BMF unmatched: "not in IRS BMF as a 501(c)(3)". Most are legitimately
+        # non-501(c)(3) (state govts, individuals, businesses, foreign entities);
+        # some are 501(c)(3)s that failed to match by name/EIN.
+        excluded["Why Excluded"] = (
+            "No match to IRS BMF as a 501(c)(3). Most excluded recipients are "
+            "state or local government agencies, individuals, for-profit businesses, "
+            "or foreign entities. A minority may be 501(c)(3)s that failed to match "
+            "on name/EIN; the methodology's Tier 4 manual review process is designed "
+            "to catch the large ones."
+        )
+    else:
+        excluded["Why Excluded"] = excluded["exclusion_reason"].map(
+            lambda r: translate_exclusion_reason(r, code_to_label)
+        )
     excluded["State"] = excluded["recipient_state"].map(state_name)
-    excluded["Business Types Tagged"] = excluded["bt_set"].fillna("").map(fmt_business_types)
+    if "bt_set" in excluded.columns:
+        excluded["Business Types Tagged"] = excluded["bt_set"].fillna("").map(fmt_business_types)
     excluded["USAspending Search URL"] = excluded.apply(
         lambda r: usaspending_search_url(r.get("recipient_name"), r["recipient_uei"]),
         axis=1,
@@ -640,10 +874,11 @@ def sheet_top_excluded(rfilter: pd.DataFrame, txn_raw: pd.DataFrame,
         "recipient_uei": "UEI",
     })
     excluded = excluded.sort_values("Total FY22-FY25 Obligations", ascending=False).head(top_n)
-    return excluded[[
-        "Recipient Name", "State", "Total FY22-FY25 Obligations",
-        "Why Excluded", "Business Types Tagged", "UEI", "USAspending Search URL",
-    ]].reset_index(drop=True)
+    cols = ["Recipient Name", "State", "Total FY22-FY25 Obligations", "Why Excluded"]
+    if "Business Types Tagged" in excluded.columns:
+        cols.append("Business Types Tagged")
+    cols += ["UEI", "USAspending Search URL"]
+    return excluded[cols].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -655,16 +890,17 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
                             names_by_uei: pd.Series,
                             outlay_by_uei: pd.Series,
                             pre_fy22_by_uei: pd.Series,
-                            title_lookup: dict[str, str], snapshot_info: dict) -> None:
-    LOG.info("Building %s", out_path)
+                            title_lookup: dict[str, str], snapshot_info: dict,
+                            source: SourceConfig) -> None:
+    LOG.info("Building %s (source=%s)", out_path, source.name)
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         # Cover sheet
-        cover = pd.DataFrame([
-            ("Federal Financial Assistance to 501(c)(3) Organizations, FY22-FY25", ""),
-            ("Recipient identification:", "USAspending business_types_code 'M' tag with mutually-exclusive co-tag exclusions"),
+        cover_rows = [
+            (source.workbook_title, ""),
+            ("Version:", source.label),
+            ("Recipient identification:", source.methodology_desc),
             ("Snapshot date (Award Data Archive):", snapshot_info.get("snapshot_date", "")),
             ("Run completed:", snapshot_info.get("run_date", "")),
-            ("Methodology version:", snapshot_info.get("methodology_version", "v2 (X-tolerant)")),
             ("", ""),
             ("How to read this workbook:", ""),
             ("1. Summary tab", "Topline numbers per FY"),
@@ -677,15 +913,23 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
             ("8. By POP State tab", "Place-of-performance state breakdown (where the work is happening)"),
             ("9. Top Recipient Counties tab", "Top 100 counties by recipient location"),
             ("10. YoY Change tab", "Largest agency-level changes from FY22 to FY25"),
-            ("11. Caveats tab", "Plain-English limitations of this analysis"),
-            ("12. Glossary tab", "Definitions of any technical terms used"),
+        ]
+        next_i = 11
+        if source.include_reconciliation:
+            cover_rows.append((f"{next_i}. Reconciliation tab",
+                               "Comparison to the USAspending-tag-only view — what does IRS BMF verification capture that a tag-only view misses?"))
+            next_i += 1
+        cover_rows += [
+            (f"{next_i}. Caveats tab", "Plain-English limitations of this analysis"),
+            (f"{next_i + 1}. Glossary tab", "Definitions of any technical terms used"),
             ("", ""),
             ("For QA spot-checks, focus on Top 50 Recipients tabs:", ""),
             ("- Are the named organizations actually 501(c)(3)?", ""),
             ("- Are they assigned to the right panel?", ""),
             ("- Is the dollar magnitude in line with what you know?", ""),
             ("- Click the USAspending Search URL for any recipient to verify", ""),
-        ], columns=["", ""])
+        ]
+        cover = pd.DataFrame(cover_rows, columns=["", ""])
         write_sheet(writer, "Cover", cover, freeze_header=False, add_filter=False,
                     col_widths={"": 60})
 
@@ -778,7 +1022,21 @@ def build_headline_workbook(out_path: Path, txn: pd.DataFrame,
                     percent_columns=["Change (%)"],
                     col_widths={"Awarding Agency": 38})
 
-        write_sheet(writer, "Caveats", sheet_caveats(),
+        # Optional reconciliation sheet: shows what BMF verification captures
+        # that a USAspending-tag-only view would miss.
+        if source.include_reconciliation:
+            recon = sheet_reconciliation()
+            if not recon.empty:
+                write_sheet(writer, "Reconciliation", recon,
+                            title=("What IRS BMF verification captures vs. a USAspending-tag-only view. "
+                                   "Positive Change = this analysis captures more dollars / recipients."),
+                            dollar_columns=["This View (BMF)", "Tag-Only View", "Change ($)"],
+                            percent_columns=["Change (%)"],
+                            col_widths={"Metric": 40, "This View (BMF)": 22,
+                                        "Tag-Only View": 22, "Change ($)": 20,
+                                        "Change (%)": 12}, add_filter=False)
+
+        write_sheet(writer, "Caveats", sheet_caveats(extra_rows=source.extra_caveats),
                     title="Limitations a reviewer should be aware of",
                     col_widths={"Caveat": 38, "Plain-English explanation": 90}, add_filter=False)
 
@@ -793,11 +1051,13 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                                     outlay_by_uei: pd.Series,
                                     pre_fy22_by_uei: pd.Series,
                                     code_to_label: dict[str, str],
-                                    snapshot_info: dict) -> None:
-    LOG.info("Building %s", out_path)
+                                    snapshot_info: dict,
+                                    source: SourceConfig) -> None:
+    LOG.info("Building %s (source=%s)", out_path, source.name)
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         cover = pd.DataFrame([
-            ("Recipient lookup — Federal Financial Assistance to 501(c)(3), FY22-FY25", ""),
+            (f"Recipient lookup — {source.workbook_title}", ""),
+            ("Version:", source.label),
             ("Snapshot date:", snapshot_info.get("snapshot_date", "")),
             ("", ""),
             ("Use the In-Scope Recipients tab to look up specific organizations.", ""),
@@ -811,7 +1071,8 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
 
         in_scope = sheet_recipient_lookup(txn, names_by_uei,
                                           outlay_by_uei=outlay_by_uei,
-                                          pre_fy22_by_uei=pre_fy22_by_uei)
+                                          pre_fy22_by_uei=pre_fy22_by_uei,
+                                          source=source)
         write_sheet(writer, "In-Scope Recipients", in_scope,
                     title="All 501(c)(3) recipients in scope (FY22-FY25 union)",
                     dollar_columns=["FY22 Obligations", "FY23 Obligations",
@@ -822,16 +1083,21 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
                                 "Congressional District": 16,
                                 "Panel": 22, "Panel Sub-cut": 18,
                                 "Business Types Tagged": 18,
+                                "Match Tier": 32, "IRS BMF NTEE": 14,
                                 "Total Cumulative Outlays": 22,
                                 "Has Pre-FY22 Award History": 18, "UEI": 14,
                                 "USAspending Search URL": 50})
 
-        excluded = sheet_top_excluded(rfilter, txn_raw, code_to_label, top_n=200)
+        excluded = sheet_top_excluded(rfilter, txn_raw, code_to_label, top_n=200,
+                                      source=source)
+        excluded_title = ("Largest recipients excluded from this analysis (plain-English reason)"
+                          if source.name == "bmf"
+                          else "Largest excluded recipients (plain-English exclusion reason)")
         write_sheet(writer, "Top 200 Excluded", excluded,
-                    title="Largest excluded recipients (plain-English exclusion reason)",
+                    title=excluded_title,
                     dollar_columns=["Total FY22-FY25 Obligations"],
                     col_widths={"Recipient Name": 40, "State": 18,
-                                "Why Excluded": 70, "Business Types Tagged": 22,
+                                "Why Excluded": 80, "Business Types Tagged": 22,
                                 "UEI": 14, "USAspending Search URL": 50})
 
 
@@ -839,18 +1105,24 @@ def build_recipient_lookup_workbook(out_path: Path, txn: pd.DataFrame,
 # Snapshot info from manifests
 # ---------------------------------------------------------------------------
 
-def latest_lightweight_manifest() -> dict:
-    """Pick the most recent manifest that ran the lightweight pipeline."""
+def latest_manifest(source_name: str) -> dict:
+    """Pick the most recent manifest run for the given source. Manifests are
+    written per-run under manifests/; note text mentions "lightweight" for
+    the M-rule path and "matched" for the BMF path — we match on the
+    presence of match_stats.lightweight_filter vs match_stats without it.
+    """
     out = {}
     for p in sorted(config.MANIFESTS.glob("run-*.json"), reverse=True):
         try:
             data = json.loads(p.read_text())
         except Exception:
             continue
-        notes = " ".join(data.get("notes") or [])
-        if "lightweight" in (notes or "").lower():
+        match_stats = data.get("match_stats") or {}
+        is_lightweight_manifest = "lightweight_filter" in match_stats
+        want_lightweight = (source_name == "lightweight")
+        if is_lightweight_manifest != want_lightweight:
             continue
-        if data.get("category_stats") and "rows_total" in (data["category_stats"] or {}):
+        if data.get("category_stats"):
             out["run_date"] = data.get("started_at", "")[:10]
             for d in data.get("usaspending_downloads", []) or []:
                 if "snapshot_dates" in d and d["snapshot_dates"]:
@@ -866,30 +1138,27 @@ def latest_lightweight_manifest() -> dict:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--out-dir", default=str(config.EXHIBITS / "lightweight" / "qa_for_client"))
+    p.add_argument("--source", choices=list(SOURCES), default="lightweight",
+                   help="Pipeline outputs to use: lightweight (USAspending-tag rule) or bmf (IRS BMF verified).")
+    p.add_argument("--out-dir", default=None,
+                   help="Override output directory. Default derived from --source.")
     args = p.parse_args()
 
-    out_dir = Path(args.out_dir)
+    source = SOURCES[args.source]()
+    out_dir = Path(args.out_dir) if args.out_dir else (config.EXHIBITS / source.out_subdir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    LOG.info("Loading lightweight analytic outputs...")
-    txn = pd.read_parquet(config.PROCESSED / "assistance_txn_501c3_lightweight.parquet")
-    rfilter = pd.read_parquet(config.PROCESSED / "recipient_filter_lightweight.parquet")
-    awards_path = config.PROCESSED / "assistance_awards_501c3_lightweight.parquet"
-    if awards_path.exists():
-        awards = pd.read_parquet(awards_path)
-        # Outlay lookup keyed by UEI: per-recipient sum across all their awards.
+    LOG.info("Loading %s pipeline outputs from %s ...", source.name, source.txn_parquet)
+    txn = pd.read_parquet(source.txn_parquet)
+    rfilter = pd.read_parquet(source.filter_parquet)
+    if source.awards_parquet.exists():
+        awards = pd.read_parquet(source.awards_parquet)
         awards["cumulative_outlay"] = pd.to_numeric(
             awards["cumulative_outlay"], errors="coerce"
         ).fillna(0)
-        outlay_by_uei = (awards.groupby("recipient_uei")["cumulative_outlay"]
-                                .sum())
-        # Pre-FY22 flag at the recipient level: True if ANY of the recipient's
-        # awards predates FY22. Used in the QA workbook to mark recipients
-        # whose outlay-vs-obligation comparison may be misleading.
+        outlay_by_uei = awards.groupby("recipient_uei")["cumulative_outlay"].sum()
         if "pre_fy22_award" in awards.columns:
-            pre_fy22_by_uei = (awards.groupby("recipient_uei")["pre_fy22_award"]
-                                     .any())
+            pre_fy22_by_uei = awards.groupby("recipient_uei")["pre_fy22_award"].any()
         else:
             pre_fy22_by_uei = pd.Series(dtype=bool)
         LOG.info("Loaded %d in-scope transactions, %d recipients in filter table, %d awards",
@@ -900,22 +1169,29 @@ def main():
         awards = pd.DataFrame()
         outlay_by_uei = pd.Series(dtype=float)
         pre_fy22_by_uei = pd.Series(dtype=bool)
-        LOG.warning("Awards parquet missing at %s; outlay sheets will be skipped", awards_path)
+        LOG.warning("Awards parquet missing at %s; outlay sheets will be skipped",
+                    source.awards_parquet)
 
-    # The lightweight analytic table doesn't carry recipient_name (the
-    # M-rule operates on UEI; names live in recipient_filter and the raw
-    # transactions). Build a UEI -> name lookup.
-    names_by_uei = (rfilter.dropna(subset=["recipient_name"])
+    # UEI -> name lookup. For lightweight, names live in the recipient_filter
+    # table (analytic txn table doesn't carry them); for BMF, the analytic
+    # txn table itself has recipient_name so we can use it directly, but the
+    # recipient_match table is the canonical source when both exist.
+    if "recipient_name" in rfilter.columns:
+        names_by_uei = (rfilter.dropna(subset=["recipient_name"])
+                              .drop_duplicates("recipient_uei")
+                              .set_index("recipient_uei")["recipient_name"])
+    elif "recipient_name" in txn.columns:
+        names_by_uei = (txn.dropna(subset=["recipient_name"])
                           .drop_duplicates("recipient_uei")
                           .set_index("recipient_uei")["recipient_name"])
+    else:
+        names_by_uei = pd.Series(dtype=str)
     LOG.info("Built UEI -> name lookup: %d entries", len(names_by_uei))
 
     LOG.info("Loading interim transactions for CFDA-title lookup and obligation aggregation...")
     title_lookup = load_listing_titles()
     LOG.info("CFDA title lookup: %d listings", len(title_lookup))
 
-    # For the excluded-recipient sheet we need raw obligations across all
-    # recipients (not just in-scope). Sample one column-projected read.
     txn_raw = pd.concat([
         pd.read_parquet(config.INTERIM / f"transactions_fy{fy}.parquet",
                         columns=["recipient_uei", "federal_action_obligation"])
@@ -923,19 +1199,18 @@ def main():
         if (config.INTERIM / f"transactions_fy{fy}.parquet").exists()
     ], ignore_index=True)
 
-    # Plain-English code labels for exclusion reasons
     bt_yaml = load_business_types_yaml()
     code_to_label = dict(bt_yaml.get("excluded_codes") or {})
 
-    snapshot_info = latest_lightweight_manifest()
+    snapshot_info = latest_manifest(source.name)
 
     build_headline_workbook(out_dir / "Headline_Summary.xlsx", txn, awards,
                             names_by_uei, outlay_by_uei, pre_fy22_by_uei,
-                            title_lookup, snapshot_info)
+                            title_lookup, snapshot_info, source=source)
     build_recipient_lookup_workbook(out_dir / "Recipient_Lookup.xlsx",
                                     txn, rfilter, txn_raw, names_by_uei,
                                     outlay_by_uei, pre_fy22_by_uei,
-                                    code_to_label, snapshot_info)
+                                    code_to_label, snapshot_info, source=source)
 
     LOG.info("Done. Files in %s", out_dir)
     for p in sorted(out_dir.glob("*.xlsx")):
