@@ -5,8 +5,7 @@ listings:
   - "93.461"   # Provider Relief Fund (HHS)
   - "21.027"   # Coronavirus State and Local Fiscal Recovery Funds (ARPA SLFRF)
   - "21.023"   # Emergency Rental Assistance (ERA1/ERA2)
-  - "84.425"   # Education Stabilization Fund (incl. EANS, ESSER)
-  - "84.425V"  # EANS
+  - "84.425"   # Education Stabilization Fund (incl. EANS, ESSER, HEERF sub-programs)
   - "59.072"   # Restaurant Revitalization Fund (SBA RRF)
   - "59.075"   # Shuttered Venue Operators Grants
   - "21.019"   # Coronavirus Relief Fund (CARES)
